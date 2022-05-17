@@ -1,0 +1,13 @@
+Source: ton-status
+Section: utils
+Priority: optional
+Maintainer: Yma Het <yma.het@gmail.com>
+Build-Depends: debhelper-compat (= 12), binutils, wget, xz-utils, dh-exec
+Standards-Version: 4.4.1
+Homepage: https://github.com/tonwhales/validator-monitoring
+
+Package: ton-status
+Architecture: all
+Depends: ${misc:Depends}
+Description: Script to minitor TON status
+ Script to minitor TON status

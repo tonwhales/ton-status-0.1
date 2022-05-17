@@ -1,0 +1,2 @@
+#!/usr/bin/dh-exec
+debian/ton-status_ => /usr/bin/ton-status
