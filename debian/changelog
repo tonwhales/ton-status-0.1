@@ -1,3 +1,9 @@
+ton-status (0.1-8) focal; urgency=medium
+
+  * Fixed logic for obtaining time before elections end
+
+ -- Yma Het <yma.het@gmail.com>  Fri, 06 Jun 2022 20:50:30 +0200
+
 ton-status (0.1-7) focal; urgency=medium
 
   * Added option to get time before elections end
