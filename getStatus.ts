@@ -69,11 +69,14 @@ async function getComplaintsAddresses(): Promise<getComplaintsAddressesResult> {
 
 async function getTimeBeforeElectionEnd() {
     let configs = await client.services.configs.getConfigs()
-    let startElection = configs.validatorSets.currentValidators!.timeSince - configs.validators.electorsStartBefore;
-    let startNextElection = startElection + configs.validators.validatorsElectedFor;
     let currentTimeInSeconds = Math.floor(Date.now() / 1000);
-    let timeBeforeElectionsEnd = startNextElection - configs.validators.electorsEndBefore - currentTimeInSeconds;
-    if (timeBeforeElectionsEnd < 0) {
+    const elector = new ElectorContract(client);
+    let electionsId = await elector.getActiveElectionId();
+    var timeBeforeElectionsEnd: number;
+    if (electionsId) {
+        timeBeforeElectionsEnd = electionsId - configs.validators.electorsEndBefore - currentTimeInSeconds;
+    }
+    else {
         timeBeforeElectionsEnd = 86400;
     }
     return {"timeBeforeElectionsEnd": timeBeforeElectionsEnd}
