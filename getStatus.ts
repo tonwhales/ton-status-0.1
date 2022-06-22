@@ -1,4 +1,6 @@
-import { Address, TonClient } from "ton";
+import fs from 'fs';
+import { Address, TonClient, TonClient4, Traits } from "ton";
+import { createLocalExecutor } from "ton-nodejs";
 import { ElectorContract } from "ton-contracts";
 import BN from "bn.js";
 import { createBackoff } from "teslabot";
@@ -82,6 +84,62 @@ async function getTimeBeforeElectionEnd() {
     return {"timeBeforeElectionsEnd": timeBeforeElectionsEnd}
 }
 
+function bnNanoTONsToTons(bn: BN): number {
+    return bn.div(new BN('1000000000', 10)).toNumber()
+}
+
+async function getStake(){
+    let c = new TonClient4({endpoint: "https://mainnet-v4.tonhubapi.com"});
+    const block = (await c.getLastBlock()).last.seqno;
+    const executor = await createLocalExecutor(c, block, address);
+    let status = (await executor.run('get_pool_status'));
+    let ctx_balance =                  bnNanoTONsToTons(status.stack.readBigNumber());
+    let ctx_balance_sent =             bnNanoTONsToTons(status.stack.readBigNumber());
+    let ctx_balance_pending_deposits = bnNanoTONsToTons(status.stack.readBigNumber());
+    let ctx_balance_pending_withdraw = bnNanoTONsToTons(status.stack.readBigNumber());
+    let ctx_balance_withdraw =         bnNanoTONsToTons(status.stack.readBigNumber());
+    let steak_for_next_elections =     ctx_balance + ctx_balance_pending_deposits;
+    return {"ctx_balance": ctx_balance,
+            "ctx_balance_sent": ctx_balance_sent,
+            "ctx_balance_pending_deposits": ctx_balance_pending_deposits,
+            "ctx_balance_pending_withdraw": ctx_balance_pending_withdraw,
+            "ctx_balance_withdraw": ctx_balance_withdraw,
+            "steak_for_next_elections": steak_for_next_elections}
+}
+
+
+async function electionsQuerySent() {
+    let elector = await new ElectorContract(client);
+    // https://github.com/ton-blockchain/ton/blob/24dc184a2ea67f9c47042b4104bbb4d82289fac1/crypto/smartcont/elector-code.fc#L1071
+    let electionEntities = await elector.getElectionEntities();
+    if (electionEntities.entities.length == 0) {
+        return {"elections_query_sent": false}
+    }
+    let querySentForADNLs = electionEntities.entities.map(e => e.adnl.toString('hex'));
+    let validatorADNLs = JSON.parse(fs.readFileSync('/etc/ton-status/config.json', 'utf-8')).validatorADNLs;
+    for (let ADNL of validatorADNLs) {
+        if (!querySentForADNLs.includes(ADNL.toLowerCase())) {
+            return {"elections_query_sent": false}
+        }
+    }
+    return {"elections_query_sent": true}
+}
+
+
+async function mustParticipateInCycle() {
+    let configs = await client.services.configs.getConfigs();
+    let prevValidatorADNLs = Array.from(configs.validatorSets.prevValidators.list.values()).map(a => a.adnlAddress.toString("hex"));
+    let validatorADNLs = JSON.parse(fs.readFileSync('/etc/ton-status/config.json', 'utf-8')).validatorADNLs;
+    let validatorsInPrevCycle = 0;
+    for (let ADNL of validatorADNLs) {
+        if (prevValidatorADNLs.includes(ADNL.toLowerCase())) {
+            validatorsInPrevCycle++;
+        }
+    }
+    return {"must_participate_in_cycle": (validatorsInPrevCycle >= (validatorADNLs.length / 2)) ? false : true}
+}
+
+
 function print(msg: any) {
     process.stdout.write(JSON.stringify(msg) + "\n");
 }
@@ -91,7 +149,11 @@ yargs(process.argv.slice(2))
     .command('complaints', 'Get validator complaints', () => {}, async () => {print(await getComplaintsAddresses())})
     .command('staking', 'Get status of stakes', () => {}, async () => {print(await getStakingState())})
     .command('election-ends-in', 'Seconds before elections end or 86400 if no elections active', () => {}, async () => {print(await getTimeBeforeElectionEnd())})
+    .command('get-stake', "Returns detailed information about stake status", () => {}, async () => {print(await getStake())})
+    .command('election-queries-sent', "Checks if elections query for current ellections has been sent", () => {}, async () => {print(await electionsQuerySent())})
+    .command('must-participate-in-cycle', "For old logic with participation in every second cycle", () => {}, async () => {print(await mustParticipateInCycle())})
     .demandCommand()
     .help('h')
     .alias('h', 'help')
     .argv;
+
