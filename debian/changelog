@@ -1,3 +1,10 @@
+ton-status (0.1-11) focal; urgency=medium
+
+  * Fixed logic
+  * Added some pool2 checks
+
+ -- Yma Het <yma.het@gmail.com>  Fri, 26 Jun 2022 23:07:28 +0200
+
 ton-status (0.1-10) focal; urgency=medium
 
   * Added 3 new checks
