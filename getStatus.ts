@@ -8,6 +8,7 @@ import yargs from "yargs/yargs";
 
 let client = new TonClient({ endpoint: "https://mainnet.tonhubapi.com/jsonRPC"});
 let address = Address.parse('EQCkR1cGmnsE45N4K0otPl5EnxnRakmGqeJUNua5fkWhales');
+let pool2Address = Address.parse('EQCY4M6TZYnOMnGBQlqi_nyeaIB1LeBFfGgP4uXQ1VWhales');
 
 const backoff = createBackoff({ onError: (e, i) => i > 3 && console.warn(e) });
 
@@ -91,7 +92,7 @@ function bnNanoTONsToTons(bn: BN): number {
 async function getStake(){
     let c = new TonClient4({endpoint: "https://mainnet-v4.tonhubapi.com"});
     const block = (await c.getLastBlock()).last.seqno;
-    const executor = await createLocalExecutor(c, block, address);
+    let executor = await createLocalExecutor(c, block, address);
     let status = (await executor.run('get_pool_status'));
     let ctx_balance =                  bnNanoTONsToTons(status.stack.readBigNumber());
     let ctx_balance_sent =             bnNanoTONsToTons(status.stack.readBigNumber());
@@ -99,12 +100,19 @@ async function getStake(){
     let ctx_balance_pending_withdraw = bnNanoTONsToTons(status.stack.readBigNumber());
     let ctx_balance_withdraw =         bnNanoTONsToTons(status.stack.readBigNumber());
     let steak_for_next_elections =     ctx_balance + ctx_balance_pending_deposits;
+    let executor2 = await createLocalExecutor(c, block, pool2Address);
+    let status2 = (await executor2.run('get_pool_status'));
+    let ctx_balance2 =                  bnNanoTONsToTons(status2.stack.readBigNumber());
+    let ctx_balance_sent2 =             bnNanoTONsToTons(status2.stack.readBigNumber());
+    let ctx_balance_pending_deposits2 = bnNanoTONsToTons(status2.stack.readBigNumber());
+    let steak_for_next_elections2 =     ctx_balance2 + ctx_balance_pending_deposits2;
     return {"ctx_balance": ctx_balance,
             "ctx_balance_sent": ctx_balance_sent,
             "ctx_balance_pending_deposits": ctx_balance_pending_deposits,
             "ctx_balance_pending_withdraw": ctx_balance_pending_withdraw,
             "ctx_balance_withdraw": ctx_balance_withdraw,
-            "steak_for_next_elections": steak_for_next_elections}
+            "steak_for_next_elections": steak_for_next_elections,
+            "steak_for_next_elections_pool2": steak_for_next_elections2}
 }
 
 
@@ -116,8 +124,8 @@ async function electionsQuerySent() {
         return {"elections_query_sent": false}
     }
     let querySentForADNLs = electionEntities.entities.map(e => e.adnl.toString('hex'));
-    let validatorADNLs = JSON.parse(fs.readFileSync('/etc/ton-status/config.json', 'utf-8')).validatorADNLs;
-    for (let ADNL of validatorADNLs) {
+    let pool1ValidatorADNLs = JSON.parse(fs.readFileSync('/etc/ton-status/config.json', 'utf-8')).pool1ValidatorADNLs;
+    for (let ADNL of pool1ValidatorADNLs) {
         if (!querySentForADNLs.includes(ADNL.toLowerCase())) {
             return {"elections_query_sent": false}
         }
@@ -128,16 +136,24 @@ async function electionsQuerySent() {
 
 async function mustParticipateInCycle() {
     let configs = await client.services.configs.getConfigs();
-    let prevValidatorADNLs = Array.from(configs.validatorSets.prevValidators.list.values()).map(a => a.adnlAddress.toString("hex"));
-    let validatorADNLs = JSON.parse(fs.readFileSync('/etc/ton-status/config.json', 'utf-8')).validatorADNLs;
-    let validatorsInPrevCycle = 0;
-    for (let ADNL of validatorADNLs) {
-        if (prevValidatorADNLs.includes(ADNL.toLowerCase())) {
-            validatorsInPrevCycle++;
+    let currentValidatorADNLs = Array.from(configs.validatorSets.currentValidators.list.values()).map(a => a.adnlAddress.toString("hex"));
+    let pool1ValidatorADNLs = JSON.parse(fs.readFileSync('/etc/ton-status/config.json', 'utf-8')).pool1ValidatorADNLs;
+    let validatorsInCurrCycle = 0;
+    for (let ADNL of pool1ValidatorADNLs) {
+        if (currentValidatorADNLs.includes(ADNL.toLowerCase())) {
+            validatorsInCurrCycle++;
         }
     }
-    return {"must_participate_in_cycle": (validatorsInPrevCycle >= (validatorADNLs.length / 2)) ? false : true}
+    // if ADNLs are in current cycle, next cycle we will skip
+    return {"must_participate_in_cycle": (validatorsInCurrCycle >= (pool1ValidatorADNLs.length / 2)) ? false : true}
 }
+
+async function getPoolsSize() {
+    let pool1ValidatorADNLs = JSON.parse(fs.readFileSync('/etc/ton-status/config.json', 'utf-8')).pool1ValidatorADNLs;
+    return {"pool_1_length": pool1ValidatorADNLs.length}
+}
+
+//TODO: implement func that returns validators indexes (probably not here?)
 
 
 function print(msg: any) {
