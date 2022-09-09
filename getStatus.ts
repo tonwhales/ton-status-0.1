@@ -1,12 +1,14 @@
 import fs from 'fs';
-import { Address, TonClient, TonClient4, Traits } from "ton";
+import { Address, TonClient, TonClient4, Traits, ADNLAddress, TupleSlice4 } from "ton";
 import { createExecutorFromRemote } from "ton-nodejs";
 import { ElectorContract } from "ton-contracts";
 import BN from "bn.js";
 import { createBackoff } from "teslabot";
 import yargs from "yargs/yargs";
+import { Gauge, Registry } from "prom-client";
+import express from "express";
 
-let pools = JSON.parse(fs.readFileSync('/etc/ton-status/config.json', 'utf-8')).pools
+let pools = JSON.parse(fs.readFileSync('/etc/ton-status/config.json.new', 'utf-8')).pools
 interface Contracts {
   [name: string]: Address;
 }
@@ -87,7 +89,7 @@ async function getComplaintsAddresses(): Promise<getComplaintsAddressesResult> {
     }
 }
 
-async function getTimeBeforeElectionEnd() {
+async function timeBeforeElectionEnd() {
     let configs = await client.services.configs.getConfigs()
     let currentTimeInSeconds = Math.floor(Date.now() / 1000);
     const elector = new ElectorContract(client);
@@ -99,7 +101,12 @@ async function getTimeBeforeElectionEnd() {
     else {
         timeBeforeElectionsEnd = 86400;
     }
-    return {"timeBeforeElectionsEnd": timeBeforeElectionsEnd}
+    let result = {};
+    for (const [contractName, contractAddress] of Object.entries(contracts)) {
+        result[contractName] = timeBeforeElectionsEnd;
+    }
+
+    return result
 }
 
 function bnNanoTONsToTons(bn: BN): number {
@@ -213,6 +220,124 @@ async function getPoolsSize() {
     return result
 }
 
+const shallowEq = (obj1, obj2) =>
+  Object.keys(obj1).length === Object.keys(obj2).length &&
+  Object.keys(obj1).every(key => obj1[key] === obj2[key]);
+
+function unsetGauge(registry, metric_name, labels) {
+    for (const [key, current_labels] of Object.entries(registry["_metrics"][metric_name]["hashMap"])) {
+       //console.log("comaparing", current_labels["labels"], labels)
+        if (shallowEq(current_labels["labels"], labels)) {
+           //console.log("deleting")
+           delete registry["_metrics"][metric_name]["hashMap"][key]
+       }
+    }
+}
+
+function valueToInt(value) {
+    if (value instanceof BN) {
+        value = value.div(new BN(Math.pow(10, 9))).toNumber()
+    }
+    if (typeof value == "boolean") {
+        value = value ? 1 : 0;
+    }
+    return value
+}
+
+let funcToMetricNames = {};
+function memoizeMetric(func, metric) {
+    if (funcToMetricNames[func].indexOf(metric) === -1) {
+        funcToMetricNames[func].push(metric);
+    }
+}
+
+function consumeMetric(register, func, metricName, poolName, value) {
+    memoizeMetric(func, metricName);
+    let poolNameSanitized = poolName.toLowerCase().replaceAll("#", "").replaceAll(" ", "_")
+    if (metricName in register["_metrics"]) {
+        let gauge = register["_metrics"][metricName];
+        gauge.labels({ pool: poolNameSanitized}).set(valueToInt(value));
+    } else {
+        const gauge = new Gauge({ name: metricName, help: 'h', labelNames: ['pool']});
+        gauge.labels({ pool: poolNameSanitized}).set(valueToInt(value));
+        register.registerMetric(gauge);
+    }
+}
+
+async function exposeMetrics(func, register) {
+    let result = undefined;
+    try {
+        result = await func();
+    }
+    catch (e) {
+       console.log("Got error during execution of ", func.name, "func. Error: ", e)
+       for (let metricName of funcToMetricNames[func]) {
+           if (metricName in register["_metrics"]) {
+               console.log("Delteting ", metricName, " metric.")
+                delete register["_metrics"][metricName]
+           }
+        }
+       return
+    }
+    if (!(func in funcToMetricNames)) {
+        funcToMetricNames[func] = [];
+    }
+    for (const [poolName, obj] of Object.entries(result)) {
+       if (['number', 'boolean'].includes(typeof obj)) {
+           consumeMetric(register, func, func.name, poolName, obj)
+           continue
+       }
+        for (let [metricName, value] of Object.entries(obj)) {
+           consumeMetric(register, func, metricName, poolName, value)
+       }
+    }
+}
+
+
+let collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle];
+let seconds = 15;
+let interval = seconds * 1000;
+
+async function startExporter() {
+    //const gauge = new Gauge({ name: 'metric_name', help: 'nohelp', labelNames: ['method', 'statusCode']});
+    //gauge.set(10); // Set to 10
+    const register = new Registry();
+    //gauge.labels({ method: 'GET', statusCode: '200' }).set(100);
+    //gauge.labels({ method: 'GET', statusCode: '300' }).set(20);
+    //register.registerMetric(gauge);
+    //await register.metrics()
+    //unsetGauge(register, 'metric_name', { method: 'GET', statusCode: '300' });
+    //delete register._metrics["metric_name"]
+    const app = express();
+
+    await exposeMetrics(getStakingState, register);
+    //console.log(await getTimeBeforeElectionEnd());
+    //console.log(await getStakingState());
+    //console.log(await electionsQuerySent());
+    await exposeMetrics(timeBeforeElectionEnd, register);
+    await exposeMetrics(electionsQuerySent, register);
+    await exposeMetrics(getStake, register);
+    await exposeMetrics(mustParticipateInCycle, register);
+    console.log(funcToMetricNames);
+    
+
+    for (let func of collectFunctions) {
+        setInterval(func, interval);
+    }
+    app.get('/metrics', async (req, res) => {
+        res.setHeader('Content-Type', register.contentType);
+        res.send(await register.metrics());
+    });
+    process.on('uncaughtException', function (err) {
+        console.log('Caught exception: ', err);
+    });
+    process.on('unhandledrejection', function (err) {
+        console.log('Caught exception: ', err);
+    });
+
+    app.listen(8080, () => console.log('Server is running on http://localhost:8080, metrics are exposed on http://localhost:8080/metrics'));
+}
+
 
 
 function print(msg: any) {
@@ -223,11 +348,12 @@ yargs(process.argv.slice(2))
     .usage('Usage: $0 <command>')
     .command('complaints', 'Get validator complaints', () => {}, async () => {print(await getComplaintsAddresses())})
     .command('staking', 'Get status of stakes', () => {}, async () => {print(await getStakingState())})
-    .command('election-ends-in', 'Seconds before elections end or 86400 if no elections active', () => {}, async () => {print(await getTimeBeforeElectionEnd())})
+    .command('election-ends-in', 'Seconds before elections end or 86400 if no elections active', () => {}, async () => {print(await timeBeforeElectionEnd())})
     .command('get-stake', "Returns detailed information about stake status", () => {}, async () => {print(await getStake())})
     .command('election-queries-sent', "Checks if elections query for current ellections has been sent", () => {}, async () => {print(await electionsQuerySent())})
     .command('must-participate-in-cycle', "For old logic with participation in every second cycle", () => {}, async () => {print(await mustParticipateInCycle())})
     .command('get-pools-size', "Returns quantity of validators in corresponding pool", () => {}, async () => {print(await getPoolsSize())})
+    .command('start-exporter', "Start metrics exporter", () => {}, async () => {print(await startExporter())})
     .demandCommand()
     .help('h')
     .alias('h', 'help')
