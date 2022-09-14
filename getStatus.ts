@@ -237,7 +237,7 @@ async function mustParticipateInCycle() {
     return result
 }
 
-async function getPoolsSize() {
+async function poolsSize() {
     let result = {};
     for (const pool_name of Object.keys(pools)) {
         for (const contractName of Object.keys(pools[pool_name].contracts)) {
@@ -337,7 +337,7 @@ async function exposeComplaints() {
     console.log("Successfully updated metrics for exposeComplaints");
 }
 
-let collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle];
+let collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle, poolsSize];
 let seconds = 15;
 let interval = seconds * 1000;
 
@@ -378,7 +378,7 @@ yargs(process.argv.slice(2))
     .command('get-stake', "Returns detailed information about stake status", () => {}, async () => {print(await getStake())})
     .command('election-queries-sent', "Checks if elections query for current ellections has been sent", () => {}, async () => {print(await electionsQuerySent())})
     .command('must-participate-in-cycle', "For old logic with participation in every second cycle", () => {}, async () => {print(await mustParticipateInCycle())})
-    .command('get-pools-size', "Returns quantity of validators in corresponding pool", () => {}, async () => {print(await getPoolsSize())})
+    .command('get-pools-size', "Returns quantity of validators in corresponding pool", () => {}, async () => {print(await poolsSize())})
     .command('start-exporter', "Start metrics exporter", () => {}, async () => {await startExporter()})
     .demandCommand()
     .help('h')

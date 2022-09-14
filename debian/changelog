@@ -1,3 +1,17 @@
+ton-status (0.1-14) focal; urgency=medium
+
+  * Added pool size to list of prometheus-compatible metrics
+
+ -- Yma Het <yma.het@gmail.com>  Thu, 04 Jul 2022 12:42:51 +0200
+
+ton-status (0.1-13) focal; urgency=medium
+
+  * Added prometheus exporter mode
+  * Get rid of v4 client
+  * Paralellized all possible requests
+
+ -- Yma Het <yma.het@gmail.com>  Thu, 14 Sep 2022 11:43:20 +0200
+
 ton-status (0.1-12) focal; urgency=medium
 
   * Rewrited all logic to multiple pools
