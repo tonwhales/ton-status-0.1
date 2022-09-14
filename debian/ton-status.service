@@ -1,0 +1,6 @@
+[Unit]
+Description=Prometheus exporter for monitoring TON Whales staking contract status
+[Service]
+ExecStart=/usr/bin/ton-status start-exporter 
+[Install]
+WantedBy=multi-user.target
