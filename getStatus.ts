@@ -247,6 +247,18 @@ async function poolsSize() {
     return result
 }
 
+async function getValidatorsStats() {
+    let configs = await client.services.configs.getConfigs();
+    let elector = new ElectorContract(client);
+    let elections = await elector.getPastElections();
+    let ex = elections.find(v => v.id === configs.validatorSets.currentValidators!.timeSince)!;
+    let all = new BN(0);
+    [...configs.validatorSets.currentValidators.list.values()].map(
+	    (entity) => all.iadd(ex.frozen.get(new BN(entity.publicKey, 'hex').toString()).stake)
+    );
+    return {"quantity": configs.validatorSets.currentValidators.total, "totalStake": bnNanoTONsToTons(all)}
+}
+
 // metrics section
 
 function valueToInt(value) {
@@ -337,6 +349,14 @@ async function exposeComplaints() {
     console.log("Successfully updated metrics for exposeComplaints");
 }
 
+async function exposeValidatorsStats() {
+    console.log("Updating metrics for exposeValidatorsStats");
+    let result = await getValidatorsStats();
+    consumeMetric(exposeValidatorsStats, "currentValidatorsQuantity", {}, result.quantity);
+    consumeMetric(exposeValidatorsStats, "currentValidatorsTotalStake", {}, result.totalStake);
+    console.log("Successfully updated metrics for exposeValidatorsStats");
+}
+
 let collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle, poolsSize];
 let seconds = 15;
 let interval = seconds * 1000;
@@ -350,6 +370,9 @@ async function startExporter() {
     funcToMetricNames[(<any>exposeComplaints)] = [];
     exposeComplaints();
     setInterval(async function () {await exposeComplaints()}, interval);
+    funcToMetricNames[(<any>exposeValidatorsStats)] = [];
+    exposeValidatorsStats();
+    setInterval(async function () {await exposeValidatorsStats()}, interval);
     app.get('/metrics', async (req, res) => {
         res.setHeader('Content-Type', register.contentType);
         res.send(await register.metrics());

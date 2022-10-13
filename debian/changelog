@@ -1,3 +1,10 @@
+ton-status (0.1-15) focal; urgency=medium
+
+  * Implemented current validators quantity and current validators total stake
+    metrics
+
+ -- Yma Het <yma.het@gmail.com>  Thu, 13 Oct 2022 16:58:05 +0200
+
 ton-status (0.1-14) focal; urgency=medium
 
   * Added pool size to list of prometheus-compatible metrics
