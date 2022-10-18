@@ -1,3 +1,9 @@
+ton-status (0.1-16) focal; urgency=medium
+
+  * Added next elections time metric
+
+ -- Yma Het <yma.het@gmail.com>  Thu, 18 Oct 2022 16:06:37 +0200
+
 ton-status (0.1-15) focal; urgency=medium
 
   * Implemented current validators quantity and current validators total stake

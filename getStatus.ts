@@ -259,6 +259,22 @@ async function getValidatorsStats() {
     return {"quantity": configs.validatorSets.currentValidators.total, "totalStake": bnNanoTONsToTons(all)}
 }
 
+async function getNextElectionsTime() {
+    let configs = await client.services.configs.getConfigs();
+    let startWorkTimeNext = configs.validatorSets.nextValidators?.timeSince || false;
+    let startWorkTimeCurrent = configs.validatorSets.currentValidators!.timeSince;
+    let elector = new ElectorContract(client);
+    let startWorkTimeFromElections = await elector.getActiveElectionId();
+    let oldStartWorkTime = startWorkTimeNext ? startWorkTimeNext : startWorkTimeCurrent
+    let startWorkTime = startWorkTimeFromElections ? startWorkTimeFromElections : oldStartWorkTime
+    let electorsEndBefore = configs.validators.electorsEndBefore;
+    let electorsStartBefore = configs.validators.electorsStartBefore;
+    let validatorsElectedFor = configs.validators.validatorsElectedFor;
+    let startElection = startWorkTime - electorsStartBefore;
+    let startNextElection = startElection + validatorsElectedFor;
+    return startNextElection
+}
+
 // metrics section
 
 function valueToInt(value) {
@@ -357,6 +373,13 @@ async function exposeValidatorsStats() {
     console.log("Successfully updated metrics for exposeValidatorsStats");
 }
 
+async function exposeNextElectionsTime() {
+    console.log("Updating metrics for exposeNextElectionsTime");
+    let result = await getNextElectionsTime();
+    consumeMetric(exposeNextElectionsTime, "nextElectionsTime", {}, result);
+    console.log("Successfully updated metrics for exposeNextElectionsTime");
+}
+
 let collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle, poolsSize];
 let seconds = 15;
 let interval = seconds * 1000;
@@ -373,6 +396,9 @@ async function startExporter() {
     funcToMetricNames[(<any>exposeValidatorsStats)] = [];
     exposeValidatorsStats();
     setInterval(async function () {await exposeValidatorsStats()}, interval);
+    funcToMetricNames[(<any>exposeNextElectionsTime)] = [];
+    exposeNextElectionsTime();
+    setInterval(async function () {await exposeNextElectionsTime()}, interval);
     app.get('/metrics', async (req, res) => {
         res.setHeader('Content-Type', register.contentType);
         res.send(await register.metrics());
