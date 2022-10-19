@@ -247,6 +247,20 @@ async function poolsSize() {
     return result
 }
 
+async function unowned() {
+    let result = {};
+    async function _getUnowned (contractName, contractAddress) {
+        let response = await backoff(() => client.callGetMethod(contractAddress, 'get_unowned', []));
+        result[contractName] = tonFromBNStack(response.stack, 0)
+    }
+    let promises = Object.entries(contracts).map(
+            ([contractName, contractAddress]) => _getUnowned(contractName, contractAddress)
+    );
+    await Promise.all(promises);
+
+    return result
+}
+
 async function getValidatorsStats() {
     let configs = await client.services.configs.getConfigs();
     let elector = new ElectorContract(client);
@@ -274,7 +288,6 @@ async function getNextElectionsTime() {
     let startNextElection = startElection + validatorsElectedFor;
     return startNextElection
 }
-
 // metrics section
 
 function valueToInt(value) {
@@ -380,7 +393,7 @@ async function exposeNextElectionsTime() {
     console.log("Successfully updated metrics for exposeNextElectionsTime");
 }
 
-let collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle, poolsSize];
+let collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle, poolsSize, unowned];
 let seconds = 15;
 let interval = seconds * 1000;
 
