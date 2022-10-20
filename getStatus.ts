@@ -20,7 +20,7 @@ for (const pool_name of Object.keys(pools)) {
 }
 
 let client = new TonClient({ endpoint: "https://mainnet.tonhubapi.com/jsonRPC"});
-const backoff = createBackoff({ onError: (e, i) => i > 3 && console.warn(e) });
+const backoff = createBackoff({ onError: (e, i) => i > 3 && console.warn(e), maxFailureCount: 5});
 
 //utils section
 
@@ -37,7 +37,7 @@ function bnNanoTONsToTons(bn: BN): number {
 }
 
 async function callMethodReturnStack(address, method) {
-    let result = await client.callGetMethod(address, method, []);
+    let result = await backoff(() => client.callGetMethod(address, method, []));;
     return result.stack
 }
 
@@ -53,13 +53,17 @@ function addressFromStack(stack) {
 }
 
 async function resolveContractProxy(address) {
-    let stack = await callMethodReturnStack(address, 'get_proxy');
+    let stack = await backoff(() => callMethodReturnStack(address, 'get_proxy'));
     return addressFromStack(stack)
 }
 
 async function resolveController(address) {
-    let stack = await callMethodReturnStack(address, 'get_controller');
+    let stack = await backoff(() => callMethodReturnStack(address, 'get_controller'));
     return addressFromStack(stack)
+}
+
+async function getConfigReliable() {
+    return await backoff(() => client.services.configs.getConfigs());
 }
 
 // payload section
@@ -93,17 +97,18 @@ async function getStakingState() {
 
 async function getComplaintsAddresses() {
     try {
-        let configs = await client.services.configs.getConfigs();
+        let configs = await getConfigReliable();
         if (!configs.validatorSets.prevValidators) {
             return {"success": false, msg: "No prevValidators field.", payload:[]}
         }
         let complaintsList = [];
-        let elections = await new ElectorContract(client).getPastElections();
+	let electorContract = new ElectorContract(client);
+	let elections = await backoff(() => electorContract.getPastElections());
         let complaintsValidators = configs.validatorSets.prevValidators;
         let complaintsElectionId = complaintsValidators.timeSince;
         let complaintsElections = elections.find((v) => v.id === complaintsElectionId)!;
-        let complaints = await new ElectorContract(client).getComplaints(complaintsElectionId);
-       let contractAdresses = Object.values(contracts).map((addr) => addr.toFriendly());
+        let complaints = await backoff(() => electorContract.getComplaints(complaintsElectionId));
+        let contractAdresses = Object.values(contracts).map((addr) => addr.toFriendly());
         for (let c of complaints) {
             let address = complaintsElections.frozen.get(new BN(c.publicKey, 'hex').toString())!.address.toFriendly();
            if (contractAdresses.includes(address)) {
@@ -119,10 +124,10 @@ async function getComplaintsAddresses() {
 }
 
 async function timeBeforeElectionEnd() {
-    let configs = await client.services.configs.getConfigs()
+    let configs = await getConfigReliable();
     let currentTimeInSeconds = Math.floor(Date.now() / 1000);
     const elector = new ElectorContract(client);
-    let electionsId = await elector.getActiveElectionId();
+    let electionsId = await backoff(() => elector.getActiveElectionId());
     var timeBeforeElectionsEnd: number;
     if (electionsId) {
         timeBeforeElectionsEnd = electionsId - configs.validators.electorsEndBefore - currentTimeInSeconds;
@@ -141,7 +146,7 @@ async function timeBeforeElectionEnd() {
 async function getStake() {
     let result = {};
     async function _getStake(contractName, contractAddress){
-        var poolStatusStack = await callMethodReturnStack(contractAddress, 'get_pool_status');
+        var poolStatusStack = await backoff(() => callMethodReturnStack(contractAddress, 'get_pool_status'));
         let ctx_balance =                  tonFromBNStack(poolStatusStack, 0);
         let ctx_balance_pending_deposits = tonFromBNStack(poolStatusStack, 2);
         let steak_for_next_elections =     ctx_balance + ctx_balance_pending_deposits;
@@ -164,9 +169,9 @@ async function getStake() {
 
 async function electionsQuerySent() {
     let result = {};
-    let elector = await new ElectorContract(client);
+    let elector = new ElectorContract(client);
     // https://github.com/ton-blockchain/ton/blob/24dc184a2ea67f9c47042b4104bbb4d82289fac1/crypto/smartcont/elector-code.fc#L1071
-    let electionEntities = await elector.getElectionEntities();
+    let electionEntities = await backoff(() => elector.getElectionEntities());
     let stakes = await getStake();
     if (electionEntities.entities.length == 0) {
        for (const pool_name of Object.keys(pools)) {
@@ -182,7 +187,7 @@ async function electionsQuerySent() {
     }
 
     async function _electionsQuerySent(pool_name, contractName) {
-           let proxyContractAddress = await resolveContractProxy(pools[pool_name].contracts[contractName]);
+           let proxyContractAddress = await backoff(() => resolveContractProxy(pools[pool_name].contracts[contractName]));
            let contractStake = stakes[contractName];
            let maxStake = pools[pool_name].maxStake;
            let validatorsNeeded = Math.ceil(contractStake.ctx_balance / maxStake);
@@ -214,8 +219,9 @@ async function electionsQuerySent() {
 }
 
 async function mustParticipateInCycle() {
-    let configs = await client.services.configs.getConfigs();
-    let elections = await new ElectorContract(client).getPastElections();
+    let configs = await getConfigReliable();
+    let electorContract = new ElectorContract(client);
+    let elections = await backoff(() => electorContract.getPastElections());
     let ex = elections.find(v => v.id === configs.validatorSets.currentValidators!.timeSince)!;
     let validatorProxyAddresses = [];
     for (let key of configs.validatorSets.currentValidators!.list!.keys()) {
@@ -267,9 +273,9 @@ async function unowned() {
 }
 
 async function getValidatorsStats() {
-    let configs = await client.services.configs.getConfigs();
+    let configs = await getConfigReliable();
     let elector = new ElectorContract(client);
-    let elections = await elector.getPastElections();
+    let elections = await backoff(() => elector.getPastElections());
     let ex = elections.find(v => v.id === configs.validatorSets.currentValidators!.timeSince)!;
     let all = new BN(0);
     [...configs.validatorSets.currentValidators.list.values()].map(
@@ -279,11 +285,11 @@ async function getValidatorsStats() {
 }
 
 async function getNextElectionsTime() {
-    let configs = await client.services.configs.getConfigs();
+    let configs = await getConfigReliable();
     let startWorkTimeNext = configs.validatorSets.nextValidators?.timeSince || false;
     let startWorkTimeCurrent = configs.validatorSets.currentValidators!.timeSince;
     let elector = new ElectorContract(client);
-    let startWorkTimeFromElections = await elector.getActiveElectionId();
+    let startWorkTimeFromElections = await backoff(() => elector.getActiveElectionId());
     let oldStartWorkTime = startWorkTimeNext ? startWorkTimeNext : startWorkTimeCurrent
     let startWorkTime = startWorkTimeFromElections ? startWorkTimeFromElections : oldStartWorkTime
     let electorsEndBefore = configs.validators.electorsEndBefore;
@@ -297,9 +303,8 @@ async function getNextElectionsTime() {
 async function controllersBalance() {
     let result = {};
     async function _controllersBalance (contractName, contractAddress) {
-        //let response = await backoff(() => client.callGetMethod(contractAddress, 'get_controller', []));
-       let controllerAddress = await backoff(() => resolveController(contractAddress));
-       let balance = await client.getBalance(controllerAddress);
+        let controllerAddress = await resolveController(contractAddress);
+        let balance = await backoff(() => client.getBalance(controllerAddress));
         result[contractName] = bnNanoTONsToTons(balance);
     }
     let promises = Object.entries(contracts).map(
