@@ -57,6 +57,11 @@ async function resolveContractProxy(address) {
     return addressFromStack(stack)
 }
 
+async function resolveController(address) {
+    let stack = await callMethodReturnStack(address, 'get_controller');
+    return addressFromStack(stack)
+}
+
 // payload section
 
 async function getStakingState() {
@@ -288,6 +293,23 @@ async function getNextElectionsTime() {
     let startNextElection = startElection + validatorsElectedFor;
     return startNextElection
 }
+
+async function controllersBalance() {
+    let result = {};
+    async function _controllersBalance (contractName, contractAddress) {
+        //let response = await backoff(() => client.callGetMethod(contractAddress, 'get_controller', []));
+       let controllerAddress = await backoff(() => resolveController(contractAddress));
+       let balance = await client.getBalance(controllerAddress);
+        result[contractName] = bnNanoTONsToTons(balance);
+    }
+    let promises = Object.entries(contracts).map(
+            ([contractName, contractAddress]) => _controllersBalance(contractName, contractAddress)
+    );
+    await Promise.all(promises);
+
+    return result
+}
+
 // metrics section
 
 function valueToInt(value) {
@@ -393,7 +415,7 @@ async function exposeNextElectionsTime() {
     console.log("Successfully updated metrics for exposeNextElectionsTime");
 }
 
-let collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle, poolsSize, unowned];
+let collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle, poolsSize, unowned, controllersBalance];
 let seconds = 15;
 let interval = seconds * 1000;
 
