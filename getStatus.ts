@@ -6,6 +6,8 @@ import { createBackoff } from "teslabot";
 import yargs from "yargs/yargs";
 import { Gauge, register } from "prom-client";
 import express from "express";
+import axios from "axios";
+
 
 let pools = JSON.parse(fs.readFileSync('/etc/ton-status/config.json.new', 'utf-8')).pools
 interface Contracts {
@@ -89,6 +91,78 @@ async function getStakingState() {
     }
     let promises = Object.entries(contracts).map(
             ([contractName, contractAddress]) => _getStakingState(contractName, contractAddress)
+    );
+    await Promise.all(promises);
+
+    return result
+}
+
+function calculateApy(totalStake: BN, totalBonuses: BN, cycleDuration: number): string {
+    const PRECISION = 1000000;
+    const YEAR_SEC = 365 * 24 * 60 * 60 * 1000;
+    const YEAR_CYCLES = Math.floor(YEAR_SEC / (cycleDuration * 2));
+    let percentPerCycle = totalBonuses.muln(PRECISION).div(totalStake).toNumber() / PRECISION;
+    let compound = Math.pow(1 + percentPerCycle, YEAR_CYCLES) - 1;
+    return (compound * 100).toFixed(5);
+}
+
+function APY(startWorkTime, electionEntities, electionsHistory, bonuses, validatorsElectedFor) {
+    electionEntities.sort((a, b) => new BN(b.amount).cmp(new BN(a.amount)));
+
+    let filtered = electionsHistory.filter((v) => { return (v.id * 1000) < startWorkTime })
+
+    return calculateApy(new BN(filtered[0].totalStake, 10), filtered[0].id * 1000 === startWorkTime ? bonuses : new BN(filtered[0].bonuses, 10), validatorsElectedFor)
+}
+
+async function fetchElections() {
+    let latest = ((await axios.get('https://connect.tonhubapi.com/net/mainnet/elections/latest')).data as { elections: number[] }).elections;
+    if (latest.length > 5) {
+        latest = latest.slice(latest.length - 5);
+    }
+    return await Promise.all(latest.map(async (el) => {
+        let r = (await axios.get('https://connect.tonhubapi.com/net/mainnet/elections/' + el)).data as {
+            election: {
+                unfreezeAt: number,
+                stakeHeld: number,
+                bonuses: string,
+                totalStake: string
+            }
+        return {
+            id: el,
+        return {
+            id: el,
+            unfreezeAt: r.election.unfreezeAt,
+            stakeHeld: r.election.stakeHeld,
+            bonuses: r.election.bonuses,
+            totalStake: r.election.totalStake
+        };
+    }));
+}
+
+async function getStakingApy() {
+    let elector = new ElectorContract(client);
+    let electionEntitiesRaw = await (elector.getElectionEntities().then((v) => v.entities));
+    let electionEntities = electionEntitiesRaw.map((v) => ({ key: v.pubkey.toString('base64'), amount: v.stake, address: v.address.toFriendly() }));
+    let configs = await getConfigReliable();
+    let startWorkTime = configs.validatorSets.currentValidators!.timeSince * 1000;
+    let validatorsElectedFor = configs.validators.validatorsElectedFor * 1000;
+    let electionsHistory = (await fetchElections()).reverse();
+    let elections = await (elector.getPastElections());
+    let ex = elections.find((v) => v.id === configs.validatorSets.currentValidators!.timeSince)!;
+    let bonuses = new BN(0);
+    if (ex) {
+        bonuses = ex.bonuses;
+    }
+    let globalApy = parseFloat(APY(startWorkTime, electionEntities, electionsHistory, bonuses, validatorsElectedFor));
+    let result = {};
+    async function _getStakingApy(contractName, contractAddress) {
+           var poolParamsStack = await backoff(() => callMethodReturnStack(contractAddress, 'get_params'));
+           let poolFee = (new BN(poolParamsStack[5][1].slice(2), 'hex')).divn(100).toNumber();
+           let poolApy = (globalApy - globalApy * (poolFee / 100)).toFixed(2);
+            result[contractName] = parseFloat(poolApy);
+    }
+    let promises = Object.entries(contracts).map(
+            ([contractName, contractAddress]) => _getStakingApy(contractName, contractAddress)
     );
     await Promise.all(promises);
 
@@ -420,7 +494,7 @@ async function exposeNextElectionsTime() {
     console.log("Successfully updated metrics for exposeNextElectionsTime");
 }
 
-let collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle, poolsSize, unowned, controllersBalance];
+let collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle, poolsSize, unowned, controllersBalance, getStakingApy];
 let seconds = 15;
 let interval = seconds * 1000;
 
@@ -468,6 +542,7 @@ yargs(process.argv.slice(2))
     .command('election-queries-sent', "Checks if elections query for current ellections has been sent", () => {}, async () => {print(await electionsQuerySent())})
     .command('must-participate-in-cycle', "For old logic with participation in every second cycle", () => {}, async () => {print(await mustParticipateInCycle())})
     .command('get-pools-size', "Returns quantity of validators in corresponding pool", () => {}, async () => {print(await poolsSize())})
+    .command('get-staking-apy', "Returns apy of pools", () => {}, async () => {print(await getStakingApy())})
     .command('start-exporter', "Start metrics exporter", () => {}, async () => {await startExporter()})
     .demandCommand()
     .help('h')

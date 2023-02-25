@@ -1,3 +1,10 @@
+ton-status (0.1-20) focal; urgency=medium
+
+  * Added pools APY metric
+
+ -- Yma Het <yma.het@gmail.com>  Sat, 25 Feb 2023 18:10:33 +0200
+
+
 ton-status (0.1-19) focal; urgency=medium
 
   * Added retrys anywhere
