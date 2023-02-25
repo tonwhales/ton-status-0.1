@@ -127,8 +127,7 @@ async function fetchElections() {
                 bonuses: string,
                 totalStake: string
             }
-        return {
-            id: el,
+        };
         return {
             id: el,
             unfreezeAt: r.election.unfreezeAt,
