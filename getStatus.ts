@@ -138,7 +138,7 @@ async function fetchElections() {
     }));
 }
 
-async function getStakingApy() {
+async function getStakingStats() {
     let elector = new ElectorContract(client);
     let electionEntitiesRaw = await (elector.getElectionEntities().then((v) => v.entities));
     let electionEntities = electionEntitiesRaw.map((v) => ({ key: v.pubkey.toString('base64'), amount: v.stake, address: v.address.toFriendly() }));
@@ -154,14 +154,15 @@ async function getStakingApy() {
     }
     let globalApy = parseFloat(APY(startWorkTime, electionEntities, electionsHistory, bonuses, validatorsElectedFor));
     let result = {};
-    async function _getStakingApy(contractName, contractAddress) {
+    async function _getStakingStats(contractName, contractAddress) {
            var poolParamsStack = await backoff(() => callMethodReturnStack(contractAddress, 'get_params'));
            let poolFee = (new BN(poolParamsStack[5][1].slice(2), 'hex')).divn(100).toNumber();
            let poolApy = (globalApy - globalApy * (poolFee / 100)).toFixed(2);
-            result[contractName] = parseFloat(poolApy);
+
+           result[contractName] = {globalApy, poolApy: parseFloat(poolApy), poolFee};
     }
     let promises = Object.entries(contracts).map(
-            ([contractName, contractAddress]) => _getStakingApy(contractName, contractAddress)
+            ([contractName, contractAddress]) => _getStakingStats(contractName, contractAddress)
     );
     await Promise.all(promises);
 
@@ -493,7 +494,7 @@ async function exposeNextElectionsTime() {
     console.log("Successfully updated metrics for exposeNextElectionsTime");
 }
 
-let collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle, poolsSize, unowned, controllersBalance, getStakingApy];
+let collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle, poolsSize, unowned, controllersBalance, getStakingStats];
 let seconds = 15;
 let interval = seconds * 1000;
 
@@ -541,7 +542,7 @@ yargs(process.argv.slice(2))
     .command('election-queries-sent', "Checks if elections query for current ellections has been sent", () => {}, async () => {print(await electionsQuerySent())})
     .command('must-participate-in-cycle', "For old logic with participation in every second cycle", () => {}, async () => {print(await mustParticipateInCycle())})
     .command('get-pools-size', "Returns quantity of validators in corresponding pool", () => {}, async () => {print(await poolsSize())})
-    .command('get-staking-apy', "Returns apy of pools", () => {}, async () => {print(await getStakingApy())})
+    .command('get-staking-apy', "Returns statistics corresponding to erevry pool", () => {}, async () => {print(await getStakingStats())})
     .command('start-exporter', "Start metrics exporter", () => {}, async () => {await startExporter()})
     .demandCommand()
     .help('h')
