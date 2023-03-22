@@ -8,8 +8,9 @@ import { Gauge, register } from "prom-client";
 import express from "express";
 import axios from "axios";
 
+let conf = JSON.parse(fs.readFileSync('/etc/ton-status/config.json.new', 'utf-8'));
+let pools = conf.pools;
 
-let pools = JSON.parse(fs.readFileSync('/etc/ton-status/config.json.new', 'utf-8')).pools
 interface Contracts {
   [name: string]: Address;
 }
@@ -61,6 +62,11 @@ async function resolveContractProxy(address) {
 
 async function resolveController(address) {
     let stack = await backoff(() => callMethodReturnStack(address, 'get_controller'));
+    return addressFromStack(stack)
+}
+
+async function resolveOwner(address) {
+    let stack = await backoff(() => callMethodReturnStack(address, 'get_owner'));
     return addressFromStack(stack)
 }
 
@@ -158,8 +164,31 @@ async function getStakingStats() {
            var poolParamsStack = await backoff(() => callMethodReturnStack(contractAddress, 'get_params'));
            let poolFee = (new BN(poolParamsStack[5][1].slice(2), 'hex')).divn(100).toNumber();
            let poolApy = (globalApy - globalApy * (poolFee / 100)).toFixed(2);
+	   let ownerAddress = await resolveOwner(contractAddress);
+	   let callMethodResult = undefined;
+	   let denominator = 1;
+	   let share = 1;
+	   try {
+               callMethodResult = await client.callGetMethod(ownerAddress, 'supported_interfaces', []);
+	   } catch (e) {
+               // if contract does not have supported_interfaces method, it is not a DAO contract
+	   }
+	   if (callMethodResult) {
+	       let dataCell = Cell.fromBoc((await client.getContractState(ownerAddress)).data!)[0].beginParse()
+	       dataCell.readCell()
+	       dataCell.readAddress();
+	       dataCell.readBit();
+	       let nominators = dataCell.readDict(257,  (s) => ({share: s.readUintNumber(257)}));
+	       let actualDenominator = dataCell.readInt(257).toNumber();
+               for (let [addrInt, actualShare] of nominators.entries()) {
+                   if (Address.parseRaw("0:" + new BN(addrInt, 10).toString(16)).equals(Address.parse(conf.whalesStakingOwner))) {
+		       denominator = actualDenominator;
+		       share = actualShare.share;
+                   }
+               }
+	   }
 
-           result[contractName] = {globalApy, poolApy: parseFloat(poolApy), poolFee};
+           result[contractName] = {globalApy, poolApy: parseFloat(poolApy), poolFee, daoShare: share, daoDenominator: denominator};
     }
     let promises = Object.entries(contracts).map(
             ([contractName, contractAddress]) => _getStakingStats(contractName, contractAddress)
