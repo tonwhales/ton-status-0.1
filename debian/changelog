@@ -1,3 +1,9 @@
+ton-status (0.1-23) focal; urgency=medium
+
+  * Updated ton library version
+
+ -- Yma Het <yma.het@gmail.com>  Mon, 22 Mar 2023 23:14:50 +0200
+
 ton-status (0.1-22) focal; urgency=medium
 
   * Added DAO params to profitability stats
