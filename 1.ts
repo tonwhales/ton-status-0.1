@@ -1,5 +1,5 @@
-import { Address, TonClient4, TupleItem, TupleReader, fromNano, toNano, Cell, configParse15, configParseValidatorSet, loadConfigParamById, ElectorContract4 } from "ton";
-import { TupleItemInt, TupleItemCell, Dictionary, serializeTuple } from "ton-core";
+import { Address, TonClient4, TupleItem, TupleItemInt, TupleReader, fromNano, Cell, configParse15, configParseValidatorSet, loadConfigParamById, ElectorContract4, Dictionary, parseTuple, serializeTuple } from "ton";
+
 import fs from 'fs';
 import { createBackoff } from "teslabot";
 import { Cacheable } from 'cache-flow';
@@ -34,7 +34,6 @@ for (const pool_name of Object.keys(pools)) {
     }
 }
 
-//let client = new TonClient({ endpoint: "https://mainnet.tonhubapi.com/jsonRPC"});
 const v4Client = new TonClient4({ endpoint: "https://mainnet-v4.tonhubapi.com", timeout: 10000 });
 const backoff = createBackoff({ onError: (e, i) => i > 3 && console.warn(e), maxFailureCount: 5 });
 
@@ -96,22 +95,23 @@ type TVMExecutionResult = {
 //     return this.toString();
 // };
 
-async function resolveContractProxy(address: Address) {
-    const ret = (await WrappedClient.runMethodOnLastBlock(address, 'get_proxy'));
-    if (ret.exitCode != 0 && ret.exitCode != 1) {
-        throw Error(`Got unexpextedexit code from get_proxy method call: ${ret.exitCode}`)
-    }
-    return ret.reader.readAddress()
-}
+// // TODO: cachable
+// async function resolveContractProxy(address: Address) {
+//     const ret = (await WrappedClient.runMethodOnLastBlock(address, 'get_proxy'));
+//     if (ret.exitCode != 0 && ret.exitCode != 1) {
+//         throw Error(`Got unexpextedexit code from get_proxy method call: ${ret.exitCode}`)
+//     }
+//     return ret.reader.readAddress()
+// }
 
-async function resolveController(address: Address) {
-    const ret = (await WrappedClient.runMethodOnLastBlock(address, 'get_controller'));
-    if (ret.exitCode != 0 && ret.exitCode != 1) {
-        throw Error(`Got unexpextedexit code from get_controller method call: ${ret.exitCode}`)
-    }
-    //console.log("resolveController", ret)
-    return ret.reader.readAddress()
-}
+// // TODO: cachable
+// async function resolveController(address: Address) {
+//     const ret = (await WrappedClient.runMethodOnLastBlock(address, 'get_controller'));
+//     if (ret.exitCode != 0 && ret.exitCode != 1) {
+//         throw Error(`Got unexpextedexit code from get_controller method call: ${ret.exitCode}`)
+//     }
+//     return ret.reader.readAddress()
+// }
 
 class LastBlock {
     private static instance: LastBlock;
@@ -133,91 +133,142 @@ class LastBlock {
 
 
 class WrappedClient {
-    public static tupleItemHash(items: TupleItem[]): string {
-        let hash = "";
-        if (items == undefined || items.length == 0) {
-            return ""
+    // public static tupleItemHash(items: TupleItem[]): string {
+    //     let hash = "";
+    //     if (items == undefined || items.length == 0) {
+    //         return ""
+    //     }
+    //     items.forEach(item => {
+    //         switch (item.type) {
+    //             case 'tuple': {
+    //                 hash += WrappedClient.tupleItemHash(item.items) + "\n";
+    //                 break;
+    //             }
+    //             case 'null': {
+    //                 hash += 'null\n';
+    //                 break;
+    //             }
+    //             case 'nan': {
+    //                 hash += 'nan\n';
+    //                 break;
+    //             }
+    //             case 'int': {
+    //                 hash += (item as TupleItemInt).value.toString() + '\n';
+    //                 break;
+    //             }
+    //             case 'slice':
+    //             case 'builder':
+    //             case 'cell': {
+    //                 const cell = ((item as unknown) as TupleItemCell).cell;
+    //                 hash += cell ? cell.hash().toString('hex') + '\n' : 'nullCell\n'
+    //                 break;
+    //             }
+    //             // default: {
+    //             //     throw Error(`Unsupported TupleItem type: "${item.type}"`);
+    //             // }
+    //         }
+    //     });
+    //     return hash
+    // }
+
+    private static serializeTVMExecutionResult(r: TVMExecutionResult): string{
+        const obj = {
+            exitCode: r.exitCode.toString(),
+            result: serializeTuple(r.result).toBoc().toString('base64'),
+            // ignore all other
         }
-        items.forEach(item => {
-            switch (item.type) {
-                case 'tuple': {
-                    hash += WrappedClient.tupleItemHash(item.items) + "\n";
-                    break;
-                }
-                case 'null': {
-                    hash += 'null\n';
-                    break;
-                }
-                case 'nan': {
-                    hash += 'nan\n';
-                    break;
-                }
-                case 'int': {
-                    hash += (item as TupleItemInt).value.toString() + '\n';
-                    break;
-                }
-                case 'slice':
-                case 'builder':
-                case 'cell': {
-                    const cell = ((item as unknown) as TupleItemCell).cell;
-                    hash += cell ? cell.hash().toString('hex') + '\n' : 'nullCell\n'
-                    break;
-                }
-                // default: {
-                //     throw Error(`Unsupported TupleItem type: "${item.type}"`);
-                // }
-            }
-        });
-        return hash
+        return JSON.stringify(obj)
     }
 
-    static serializeRunMethodArgs(address: Address, methodName: string, args?: TupleItem[]){
-        const funcArgs = {
-            address: address.toString(),
-            methodName: methodName,
-            args: undefined
+    private static parseTVMExecutionResult(s: string): TVMExecutionResult{
+        const parsed = JSON.parse(s);
+        const resultTuple = parseTuple(Cell.fromBase64(parsed.result));
+        const c: TVMExecutionResult = {
+            exitCode: parseInt(parsed.exitCode),
+            result: resultTuple,
+            reader: new TupleReader(resultTuple),
+            resultRaw: undefined,
+            block: undefined,
+            shardBlock: undefined
         }
-        if (args) {
-            funcArgs.args = serializeTuple(args);
-        }
-        return 
+        return c
+    }
+
+    private static objToB64String(o: Object): string {
+        return Buffer.from(JSON.stringify(o)).toString('base64');
     }
 
     @Cacheable({
         options: { expirationTime: INTER_BLOCK_DELAY_SECONDS },
-        argsToKey: (address: Address, methodName: string, args?: TupleItem[]) => [address.toString(), methodName].concat([args ? WrappedClient.tupleItemHash(args) : "none"]),
-        //serialize: ((address: Address, methodName: string, args?: TupleItem[]) => ({address: address.toString()})
+        argsToKey: (address: Address, methodName: string, args?: TupleItem[]) => 
+                    WrappedClient.objToB64String([address.toString(), methodName].concat([args ? serializeTuple(args).hash().toString("base64") : "none"])),
+        serialize: WrappedClient.serializeTVMExecutionResult,
+        deserialize: WrappedClient.parseTVMExecutionResult
     })
     public static async runMethodOnLastBlock(address: Address, methodName: string, args?: TupleItem[]): Promise<TVMExecutionResult> {
         const seqno = await LastBlock.getInstance().getSeqno();
-        return await backoff(() => v4Client.runMethod(seqno, address, methodName, args));
+        return await WrappedClient.runMethod(seqno, address, methodName, args);
     }
 
     @Cacheable({
-        options: { maxSize: 100 },
-        argsToKey: (seqno: number, address: Address, methodName: string, args?: TupleItem[]) => [seqno, address.toString(), methodName].concat([args ? WrappedClient.tupleItemHash(args) : "none"])
+        options: { maxSize: 10 },
+        argsToKey: (seqno: number, address: Address, methodName: string, args?: TupleItem[]) =>
+                    WrappedClient.objToB64String([seqno, address.toString(), methodName].concat([args ? serializeTuple(args).hash().toString("base64") : "none"])),
+        serialize: WrappedClient.serializeTVMExecutionResult,
+        deserialize: WrappedClient.parseTVMExecutionResult
     })
     public static async runMethod(seqno: number, address: Address, methodName: string, args?: TupleItem[]): Promise<TVMExecutionResult> {
         return await backoff(() => v4Client.runMethod(seqno, address, methodName, args));
 
     }
 
-    @Cacheable({ options: { maxSize: 100 } })
+    @Cacheable({
+        options: { maxSize: 10 },
+        argsToKey: (seqno: number, address: Address) => WrappedClient.objToB64String([seqno, address.toString()])        
+    })
     public static async getAccount(block: number, address: Address) {
         return await backoff(() => v4Client.getAccount(block, address));
     }
 
-    @Cacheable({ options: { maxSize: 100 } })
+    @Cacheable({ options: { maxSize: 10 } })
     public static async getConfig(seqno: number, ids?: number[]) {
         return await backoff(() => v4Client.getConfig(seqno, ids));
     }
 
-    @Cacheable({ options: { maxSize: 100 } })
+    @Cacheable({
+        options: { maxSize: 100 },
+        argsToKey: (seqno: number, address: Address) => WrappedClient.objToB64String([seqno, address.toString()])        
+    })
     public static async getBalance(seqno: number, address: Address) {
         return parseFloat((await backoff(() => v4Client.getAccountLite(seqno, address))).account.balance.coins)
     }
-}
 
+    @Cacheable({
+        options: { maxSize: 20 },
+        serialize: (addr: Address) => {return addr.toString()},
+        deserialize: (addr: string) => {return Address.parse(addr)},
+    })
+    public static async resolveContractProxy(address: Address) {
+        const ret = (await WrappedClient.runMethodOnLastBlock(address, 'get_proxy'));
+        if (ret.exitCode != 0 && ret.exitCode != 1) {
+            throw Error(`Got unexpextedexit code from get_proxy method call: ${ret.exitCode}`)
+        }
+        return ret.reader.readAddress()
+    }
+
+    @Cacheable({
+        options: { maxSize: 20 },
+        serialize: (addr: Address) => {return addr.toString()},
+        deserialize: (addr: string) => {return Address.parse(addr)},
+    })
+    public static async resolveController(address: Address) {
+        const ret = (await WrappedClient.runMethodOnLastBlock(address, 'get_controller'));
+        if (ret.exitCode != 0 && ret.exitCode != 1) {
+            throw Error(`Got unexpextedexit code from get_controller method call: ${ret.exitCode}`)
+        }
+        return ret.reader.readAddress()
+    }
+}
 
 async function getStakingState() {
     const result = new Map<string, StakingState>();
@@ -246,13 +297,11 @@ async function getStakingState() {
     return result;
 }
 
+// TODO: rewrite this logic to v4 api in connect
 // function calculateApy(totalStake: bigint, totalBonuses: bigint, cycleDuration: number): string {
 //     const PRECISION = BigInt(1000000);
 //     const YEAR_SEC = 365 * 24 * 60 * 60 * 1000;
 //     const YEAR_CYCLES = Math.floor(YEAR_SEC / (cycleDuration * 2));
-
-
-
 
 //     //!!!!!!!!!!!!
 //     const percentPerCycle = parseInt(((totalBonuses * PRECISION) / totalStake).toString()) / parseInt(PRECISION.toString());
@@ -306,16 +355,6 @@ async function getStakingState() {
 //     }));
 // }
 
-
-// class V4ToPytonAdapter {
-//     public async callGetMethod(address: Address, name: string, stack?: TupleItem[]): Promise<{gas_used: number, stack: TupleReader}> {
-//         const result = (await WrappedClient.runMethodOnLastBlock(address, name, stack)).result
-//         return new Promise(() => ({stack: result, gas_used: 0}))
-//     }
-// }
-
-// const pytonEmulatedClient = new V4ToPytonAdapter()
-
 async function resolveOwner(address: Address) {
     const res = (await WrappedClient.runMethodOnLastBlock(address, 'get_owner')).result.pop();
     if (res.type === "slice") {
@@ -328,14 +367,9 @@ async function resolveOwner(address: Address) {
 async function getStakingStats() {
     const seqno = await LastBlock.getInstance().getSeqno();
     const elector = new ElectorContract4((WrappedClient as unknown) as TonClient4);
-    //const electionEntitiesRaw = (await (elector.getElectionEntities(seqno)) || { entities: [] }).entities;
-   // const electionEntities = electionEntitiesRaw.map((v: any) => ({ key: v.pubkey.toString('base64'), amount: v.stake, address: v.address.toString() }));
     const srializedConfigCell = (await WrappedClient.getConfig(seqno, [34])).config.cell;
-    //const config15 = configParse15(loadConfigParamById(srializedConfigCell, 15).beginParse());
     const currentValidators = configParseValidatorSet(loadConfigParamById(srializedConfigCell, 34).beginParse());
     const startWorkTime = currentValidators.timeSince;
-    //const validatorsElectedFor = config15.validatorsElectedFor * 1000;
-    //const electionsHistory = (await fetchElections()).reverse();
     const elections = await (elector.getPastElections(seqno));
     const ex = elections.find((v) => v.id === startWorkTime)!;
     let bonuses = BigInt(0);
@@ -374,7 +408,7 @@ async function getStakingStats() {
                 }
             }
         }
-        result[contractName] = { globalApy, poolApy: parseFloat(poolApy), poolFee, daoShare: share, daoDenominator: denominator };
+        result.set(contractName, { globalApy, poolApy: parseFloat(poolApy), poolFee, daoShare: share, daoDenominator: denominator });
     }
 
     const promises = Object.entries(contracts).map(
@@ -385,7 +419,6 @@ async function getStakingStats() {
     return result
 }
 
-// works fine
 async function getComplaintsAddresses() {
     const seqno = await LastBlock.getInstance().getSeqno();
     try {
@@ -415,7 +448,6 @@ async function getComplaintsAddresses() {
     }
 }
 
-// works fine
 async function timeBeforeElectionEnd() {
     const seqno = await LastBlock.getInstance().getSeqno();
     const srializedConfigCell = (await WrappedClient.getConfig(seqno, [15])).config.cell;
@@ -432,7 +464,7 @@ async function timeBeforeElectionEnd() {
     }
     const result = new Map<string, number>();
     for (const contractName of Object.keys(contracts)) {
-        result[contractName] = timeBeforeElectionsEnd;
+        result.set(contractName, timeBeforeElectionsEnd);
     }
 
     return result
@@ -447,7 +479,6 @@ type PoolStstus = {
     ctx_balance_withdraw: number
 }
 
-// works fine
 async function getStake() {
     const result = new Map<string, PoolStstus>();
     async function _getStake(contractName: string, contractAddress: Address) {
@@ -459,7 +490,6 @@ async function getStake() {
         } else {
             throw Error(`Got unexpextedexit code from get_pool_status method call: ${ret.exitCode}`)
         }
-        console.log(ret.reader);
         const ctx_balance = parseFloat(fromNano(ret.reader.readBigNumber()));
         const ctx_balance_sent = parseFloat(fromNano(ret.reader.readBigNumber()));
         const ctx_balance_pending_deposits = parseFloat(fromNano(ret.reader.readBigNumber()));
@@ -483,7 +513,6 @@ async function getStake() {
     return result
 }
 
-// works fine
 async function electionsQuerySent() {
     const seqno = await LastBlock.getInstance().getSeqno();
     const result = new Map<string, boolean>();
@@ -501,11 +530,11 @@ async function electionsQuerySent() {
     }
     const querySentForADNLs = new Map<string, string>();
     for (const entitie of electionEntities.entities) {
-        querySentForADNLs[entitie.adnl.toString('hex')] = entitie.address.toString();
+        querySentForADNLs.set(entitie.adnl.toString('hex'), entitie.address.toString());
     }
 
     async function _electionsQuerySent(pool_name: string, contractName: string) {
-        const proxyContractAddress = await backoff(() => resolveContractProxy(pools[pool_name].contracts[contractName]));
+        const proxyContractAddress = await backoff(() => WrappedClient.resolveContractProxy(pools[pool_name].contracts[contractName]));
         const contractStake = stakes.get(contractName);
         const maxStake = pools[pool_name].maxStake;
         const validatorsNeeded = Math.ceil(contractStake.ctx_balance /maxStake);
@@ -531,8 +560,6 @@ async function electionsQuerySent() {
     return result
 }
 
-
-// works fine
 async function mustParticipateInCycle() {
     const seqno = await LastBlock.getInstance().getSeqno();
     const srializedConfigCell = (await WrappedClient.getConfig(seqno, [34])).config.cell;
@@ -549,7 +576,7 @@ async function mustParticipateInCycle() {
 
     const result = new Map<string, boolean>();
     async function _mustParticipateInCycle(contractName: string, contractAddress: Address) {
-        const proxyContractAddress = await resolveContractProxy(contractAddress);
+        const proxyContractAddress = await WrappedClient.resolveContractProxy(contractAddress);
         result.set(contractName, !validatorProxyAddresses.includes(proxyContractAddress.toString()))
     }
     const promises = Object.entries(contracts).map(
@@ -560,7 +587,6 @@ async function mustParticipateInCycle() {
     return result
 }
 
-// works fine
 async function poolsSize(): Promise<Map<string, number>> {
     const result = new Map<string, number>();
     for (const pool_name of Object.keys(pools)) {
@@ -571,7 +597,6 @@ async function poolsSize(): Promise<Map<string, number>> {
     return result
 }
 
-// works fine
 async function unowned(){
     const result = new Map<string, number>();
     async function _getUnowned (contractName: string, contractAddress: Address) {
@@ -591,12 +616,11 @@ async function unowned(){
     return result
 }
 
-// works fine
 async function controllersBalance(): Promise<Map<string, number>> {
     const seqno = await LastBlock.getInstance().getSeqno();
     const result = new Map<string, number>();
     async function _controllersBalance (contractName: string, contractAddress: Address) {
-        const controllerAddress = await resolveController(contractAddress);
+        const controllerAddress = await WrappedClient.resolveController(contractAddress);
         const balance = await WrappedClient.getBalance(seqno, controllerAddress);
         result.set(contractName, parseFloat(fromNano(balance)));
     }
@@ -608,7 +632,6 @@ async function controllersBalance(): Promise<Map<string, number>> {
     return result
 }
 
-// works fine
 async function getValidatorsStats(): Promise<{quantity: number, totalStake: number}> {
     const seqno = await LastBlock.getInstance().getSeqno();
     const srializedConfigCell = (await WrappedClient.getConfig(seqno, [34])).config.cell;
@@ -626,7 +649,6 @@ async function getValidatorsStats(): Promise<{quantity: number, totalStake: numb
     return {quantity: currentValidators.total, totalStake: parseFloat(fromNano(all))}
 }
 
-// works fine
 async function getNextElectionsTime(): Promise<number> {
     const seqno = await LastBlock.getInstance().getSeqno();
     const srializedConfigCell = (await WrappedClient.getConfig(seqno, [15, 34, 36])).config.cell;
@@ -670,40 +692,31 @@ const toCamel = (s: string): string => {
     });
 };
 
-const funcToMetricNames = {};
-function memoizeMetric(func, metric) {
-    console.log("memoizeMetric", metric)
-    if (funcToMetricNames[func].indexOf(metric) === -1) {
-        funcToMetricNames[func].push(metric);
+const funcToMetricNames = new Map<Function, string[]>();
+function memoizeMetric(func: Function, metric: string) {
+    if (funcToMetricNames.get(func).indexOf(metric) === -1) {
+        funcToMetricNames.get(func).push(metric);
     }
 }
 
-function consumeMetric(func, metricName: string, poolLabel, value) {
+function consumeMetric(func: () => Promise<Map<string, any> | void>, metricName: string, poolLabel: {pool: string} | {}, value: any) {
     const sanitizedMetricName = toCamel(metricName);
     memoizeMetric(func, sanitizedMetricName);
     const labelNames = Object.keys(poolLabel);
-    try {
-        if (sanitizedMetricName in register["_metrics"]) {
-            const gauge = register["_metrics"][sanitizedMetricName];
-            const mutableGauge = labelNames ? gauge.labels(poolLabel) : gauge;
-            mutableGauge.set(valueToInt(value));
-        } else {
-            const gauge = new Gauge({ name: sanitizedMetricName, help: 'h', labelNames: labelNames });
-            const mutableGauge = labelNames ? gauge.labels(poolLabel) : gauge
-            mutableGauge.set(valueToInt(value));
-        }
-    /// !!!!!!!!!!!!!!!!!!!!! DELETE ME
-    } catch (error) {
-        console.log(error)
-        console.log(metricName)
+    if (sanitizedMetricName in register["_metrics"]) {
+        const gauge = register["_metrics"][sanitizedMetricName];
+        const mutableGauge = labelNames ? gauge.labels(poolLabel) : gauge;
+        mutableGauge.set(valueToInt(value));
+    } else {
+        const gauge = new Gauge({ name: sanitizedMetricName, help: 'h', labelNames: labelNames });
+        const mutableGauge = labelNames ? gauge.labels(poolLabel) : gauge
+        mutableGauge.set(valueToInt(value));
     }
 
 }
 
-function deleteMetrics(func) {
-    console.log("func", func);
-    console.log("funcToMetricNames[func]", funcToMetricNames[func]);
-    for (const metricName of funcToMetricNames[func]) {
+function deleteMetrics(func: () => Promise<Map<string, any>>) {
+    for (const metricName of funcToMetricNames.get(func)) {
         if (metricName in register["_metrics"]) {
             console.log("Delteting ", metricName, " metric.");
             delete register["_metrics"][metricName];
@@ -711,32 +724,27 @@ function deleteMetrics(func) {
     }
 }
 
-async function exposeMetrics(func) {
+async function exposeMetrics(func: () => Promise<Map<string, any>>) {
     console.log("Updating metrics for", func.name);
     let result = undefined;
     try {
         result = await func();
-        //console.log(result);
     }
     catch (e) {
         console.log("Got error during execution of", func.name, "func. Error:", e)
         deleteMetrics(func);
         return
     }
-    if (!(func in funcToMetricNames)) {
-        funcToMetricNames[func] = [];
+    if (!funcToMetricNames.has(func)) {
+        funcToMetricNames.set(func, []);
     }
-    //for (const [poolName, obj] of Object.entries(result)) {
     for (const [poolName, obj] of result.entries()) {
-        //console.log("iterating")
         const poolLabel = { pool: poolName.toLowerCase().replace(/#/g, '').replace(/ /g, '_') };
         if (['number', 'boolean'].includes(typeof obj)) {
-            //console.log("here");
             consumeMetric(func, func.name, poolLabel, obj);
             continue
         }
         for (const [metricName, value] of Object.entries(obj)) {
-            //console.log("here2");
             consumeMetric(func, metricName, poolLabel, value);
         }
     }
@@ -780,13 +788,13 @@ async function startExporter() {
         exposeMetrics(func);
         setInterval(async function () { await exposeMetrics(func) }, interval);
     }
-    funcToMetricNames[(<any>exposeComplaints)] = [];
+    funcToMetricNames.set(exposeComplaints, []);
     exposeComplaints();
     setInterval(async function () {await exposeComplaints()}, interval);
-    funcToMetricNames[(<any>exposeValidatorsStats)] = [];
+    funcToMetricNames.set(exposeValidatorsStats, []);
     exposeValidatorsStats();
     setInterval(async function () {await exposeValidatorsStats()}, interval);
-    funcToMetricNames[(<any>exposeNextElectionsTime)] = [];
+    funcToMetricNames.set(exposeNextElectionsTime, []);
     exposeNextElectionsTime();
     setInterval(async function () {await exposeNextElectionsTime()}, interval);
     app.get('/metrics', async (req: Request, res: Response) => {
@@ -805,13 +813,7 @@ async function startExporter() {
 
 
 async function main() {
-    //await startExporter();
-    console.log(JSON.stringify(Object.fromEntries(await electionsQuerySent())));
-    //console.log(await getValidatorsStats());
-    // console.log(await _getStakingState());
-    // console.log("start")
-    // await WrappedClient.runMethodOnLastBlock(Address.parse("EQDhGXtbR6ejNQucRcoyzwiaF2Ke-5T8reptsiuZ_mLockup"), 'get_staking_status')
-    // console.log("finish")
+    await startExporter();
 }
 
 main()
