@@ -1,3 +1,9 @@
+ton-status (0.1-24) focal; urgency=medium
+
+  * Added debug metrices to elections process
+
+ -- Yma Het <yma.het@gmail.com>  Mon, 17 Aug 2023 15:41:21 +0200
+
 ton-status (0.1-23) focal; urgency=medium
 
   * Updated ton library version

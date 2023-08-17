@@ -240,7 +240,7 @@ async function timeBeforeElectionEnd() {
     }
     let result = {};
     for (const contractName of Object.keys(contracts)) {
-        result[contractName] = timeBeforeElectionsEnd;
+        result[contractName] = {timeBeforeElectionEnd: timeBeforeElectionsEnd, electionsId, electorsEndBefore: configs.validators.electorsEndBefore};
     }
 
     return result
