@@ -6,5 +6,5 @@
       "esModuleInterop": true,
       "moduleResolution": "NodeNext"
     },
-    "files": ["1.ts"]
+    "files": ["getStatus.ts"]
   }
