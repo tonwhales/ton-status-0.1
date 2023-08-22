@@ -584,8 +584,8 @@ async function electionsQuerySent() {
         const validatorsNeeded = Math.ceil(contractStake.ctx_balance /maxStake);
         let quesrySentForNCurrentElectors = 0;
         for (const ADNL of pools[pool_name].ADNLs) {
-            if (Object.keys(querySentForADNLs).includes(ADNL.toLowerCase())) {
-                if (querySentForADNLs[ADNL.toLowerCase()] == proxyContractAddress.toString()) {
+            if (Array.from(querySentForADNLs.keys()).includes(ADNL.toLowerCase())) {
+                if (querySentForADNLs.get(ADNL.toLowerCase()) == proxyContractAddress.toString()) {
                     quesrySentForNCurrentElectors++;
                 }
             }
