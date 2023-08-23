@@ -1,3 +1,10 @@
+ton-status (0.1-27) focal; urgency=medium
+
+  * Increased depth of querySent parameter lookup in getStakingState.
+  * Increased freqency of metrics collection.
+
+ -- Yma Het <yma.het@gmail.com>  Mon, 23 Aug 2023 19:11:07 +0200
+
 ton-status (0.1-26) focal; urgency=medium
 
   * Fixed bug in electionsQuerySent metric
