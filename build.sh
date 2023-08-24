@@ -1,5 +1,5 @@
 #!/bin/bash
-PREV_VERSION=$(dpkg-parsechangelog -c2 | grep -A 100 "^Changes:" | tail -n 3 | grep -o "(.*)" | sed 's@(\|)@@g')
+PREV_VERSION=$(dpkg-parsechangelog -c2 | grep -A 100 "^Changes:" | grep -o "(.*)" | tail -n1 | sed 's@(\|)@@g')
 wget "https://launchpad.net/~yma-het/+archive/ubuntu/ton/+sourcefiles/ton-status/$PREV_VERSION/ton-status_0.1.orig.tar.xz" -O ../ton-status_0.1.orig.tar.xz
 rm -rf debian/patches/
 dpkg-source --commit
