@@ -306,8 +306,7 @@ const wc = new WrappedClient({ endpoint: "https://mainnet-v4.tonhubapi.com", tim
 async function getStakingState() {
     const result = new Map<string, StakingState>();
     async function _getStakingState(contractName: string, contractAddress: Address) {
-        const block = await LastBlock.getInstance().getSeqno();
-        const ret = (await wc.runMethod(block, contractAddress, 'get_staking_status'));
+        const ret = (await wc.runMethodOnLastBlock(contractAddress, 'get_staking_status'));
         // https://docs.ton.org/learn/tvm-instructions/tvm-exit-codes
         // 1 is !!!ALTERNATIVE!!! success exit code
         if (ret.exitCode != 0 && ret.exitCode != 1) {
@@ -316,25 +315,10 @@ async function getStakingState() {
         const stakeAt = ret.reader.readNumber();
         const stakeUntil = ret.reader.readNumber();
         const stakeSent = ret.reader.readBigNumber();
-        let querySent = ret.reader.readNumber() === -1;
+        const querySent = ret.reader.readNumber() === -1;
         const couldUnlock = ret.reader.readNumber() === -1;
         const locked = ret.reader.readNumber() === -1;
 
-        // Potentially, we could skip seqno with query sent param set ot true,
-        // so a little retrospective will be handy
-        async function _parseQueryStatus(block: number): Promise<boolean> {
-            const ret = (await wc.runMethod(block, contractAddress, 'get_staking_status'));
-            ret.reader.skip(3)
-            return ret.reader.readNumber() === -1
-        }
-        const quesryStatesPromises: Array<boolean | Promise<boolean>> = [querySent];
-        for (let index = 1; index < 10; index++) {
-            quesryStatesPromises.push(_parseQueryStatus(block - index));
-        }
-        const quesryStates = await Promise.all(quesryStatesPromises);
-        if(quesryStates.some(item => item)) {
-            querySent = true;
-        }
         result.set(contractName, { stakeAt, stakeUntil, stakeSent, querySent, couldUnlock, locked })
 
     }

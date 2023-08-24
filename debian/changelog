@@ -1,3 +1,9 @@
+ton-status (0.1-28) focal; urgency=medium
+
+  * Reverted: increased depth of querySent parameter lookup in getStakingState.
+
+ -- Yma Het <yma.het@gmail.com>  Mon, 24 Aug 2023 13:56:05 +0200
+
 ton-status (0.1-27) focal; urgency=medium
 
   * Increased depth of querySent parameter lookup in getStakingState.
