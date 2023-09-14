@@ -337,6 +337,7 @@ async function getStakingState() {
         const stakeAt = ret.reader.readNumber();
         const stakeUntil = ret.reader.readNumber();
         const stakeSent = ret.reader.readBigNumber();
+        ret.reader.readNumber(); // skip querySent
         const querySent = electorStakeReqestAge < 5 * 60; // Query sent less than 5 min ago
         const couldUnlock = ret.reader.readNumber() === -1;
         const locked = ret.reader.readNumber() === -1;
