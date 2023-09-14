@@ -1,3 +1,9 @@
+ton-status (0.1-29) focal; urgency=medium
+
+  * Rewrited querySent metric to search request by observing proxy transactions.
+
+ -- Yma Het <yma.het@gmail.com>  Thu, 14 Sep 2023 11:23:59 +0200
+
 ton-status (0.1-28) focal; urgency=medium
 
   * Reverted: increased depth of querySent parameter lookup in getStakingState.
