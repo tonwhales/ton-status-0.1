@@ -249,10 +249,18 @@ class WrappedClient extends TonClient4 {
 
     @Cacheable({
         options: { maxSize: 10 },
-        argsToKey: (seqno: number, address: Address) => WrappedClient.objToB64String([seqno, address.toString()])        
+        argsToKey: (seqno: number, address: Address) => WrappedClient.objToB64String([seqno, address.toString()])
     })
     public async getAccount(block: number, address: Address) {
         return await backoff(() => v4Client.getAccount(block, address));
+    }
+
+    @Cacheable({
+        options: { maxSize: 10 },
+        argsToKey: (seqno: number, address: Address) => WrappedClient.objToB64String([seqno, address.toString()])
+    })
+    public async getAccountLite(block: number, address: Address) {
+        return await backoff(() => v4Client.getAccountLite(block, address));
     }
 
     @Cacheable({ options: { maxSize: 10 } })
@@ -262,7 +270,7 @@ class WrappedClient extends TonClient4 {
 
     @Cacheable({
         options: { maxSize: 100 },
-        argsToKey: (seqno: number, address: Address) => WrappedClient.objToB64String([seqno, address.toString()])        
+        argsToKey: (seqno: number, address: Address) => WrappedClient.objToB64String([seqno, address.toString()])
     })
     public async getBalance(seqno: number, address: Address) {
         return parseFloat((await backoff(() => v4Client.getAccountLite(seqno, address))).account.balance.coins)
@@ -305,17 +313,31 @@ const wc = new WrappedClient({ endpoint: "https://mainnet-v4.tonhubapi.com", tim
 
 async function getStakingState() {
     const result = new Map<string, StakingState>();
+    const seqno = await LastBlock.getInstance().getSeqno();
     async function _getStakingState(contractName: string, contractAddress: Address) {
-        const ret = (await wc.runMethodOnLastBlock(contractAddress, 'get_staking_status'));
+        async function _getElectorStakeReqestSeqno() {
+            const proxyContractAddress = await wc.resolveContractProxy(contractAddress);
+            const accountState = await wc.getAccountLite(seqno, proxyContractAddress);
+            const txes = await wc.getAccountTransactions(proxyContractAddress, BigInt(accountState.account.last.lt), Buffer.from(accountState.account.last.hash, 'base64'));
+            for (const tx of txes) {
+                const opId = tx.tx.inMessage.body.beginParse().loadUint(32);
+                if (opId == 0x4e73744b && (tx.tx.inMessage.info.src as Address).equals(contractAddress)) { // int elector::stake::request() asm "0x4e73744b PUSHINT";
+                    return tx.block.seqno
+                }
+            }
+            return 0
+        }
+        const [ret, electorStakeReqestSeqno] = await Promise.all([wc.runMethodOnLastBlock(contractAddress, 'get_staking_status'), _getElectorStakeReqestSeqno()]);
         // https://docs.ton.org/learn/tvm-instructions/tvm-exit-codes
         // 1 is !!!ALTERNATIVE!!! success exit code
         if (ret.exitCode != 0 && ret.exitCode != 1) {
             throw Error(`Got unexpextedexit code from get_staking_status method call: ${ret.exitCode}`)
         }
+        const electorStakeReqestAge = INTER_BLOCK_DELAY_SECONDS * (seqno - electorStakeReqestSeqno);
         const stakeAt = ret.reader.readNumber();
         const stakeUntil = ret.reader.readNumber();
         const stakeSent = ret.reader.readBigNumber();
-        const querySent = ret.reader.readNumber() === -1;
+        const querySent = electorStakeReqestAge < 5 * 60; // Query sent less than 5 min ago
         const couldUnlock = ret.reader.readNumber() === -1;
         const locked = ret.reader.readNumber() === -1;
 
