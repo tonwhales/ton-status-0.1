@@ -1,12 +1,14 @@
-import { Address, TonClient4, TupleItem, TupleItemInt, TupleReader, fromNano, Cell, configParse15, configParseValidatorSet, loadConfigParamById, ElectorContract, Dictionary, parseTuple, serializeTuple, TonClient4Parameters } from "@ton/ton";
+import { Address, TonClient4, TupleItem, TupleItemInt, TupleReader, fromNano, Cell, configParse15, configParseValidatorSet, loadConfigParamById, ElectorContract, Dictionary, parseTuple, serializeTuple, TonClient4Parameters, toNano } from "@ton/ton";
 
 import fs from 'fs';
 import { createBackoff } from "teslabot";
-import { Cacheable } from 'cache-flow';
+import { Cacheable, CacheableParams } from 'cache-flow';
 import { Semaphore } from 'async-mutex';
 import express, { Express, Request, Response } from 'express';
 import { Gauge, register } from "prom-client";
+import { encode, decode, ExtensionCodec, DecodeError } from "@msgpack/msgpack";
 import axios from "axios";
+import * as crypto from "crypto";
 
 const INTER_BLOCK_DELAY_SECONDS = 3;
 const PROMETHEUS_PORT = 8080;
@@ -20,6 +22,7 @@ type Config = {
     }}
     liquidPools: {[name: string]: {
         network: string,
+        minStake: number,
         maxStake: number,
         contract: string,
         ADNLs: string[]
@@ -135,48 +138,47 @@ type StakingState = {
 //     return ret.reader.readAddress()
 // }
 
-class LastBlock {
-    private static instance: LastBlock;
-    private static semaphore = new Semaphore(1);
-    private constructor() { }
+// class LastBlock {
+//     private static instance: LastBlock;
+//     private static semaphore = new Semaphore(1);
+//     private constructor() { }
 
-    public static getInstance(): LastBlock {
-        if (!LastBlock.instance) {
-            LastBlock.instance = new LastBlock();
-        }
-        return LastBlock.instance;
-    }
+//     public static getInstance(): LastBlock {
+//         if (!LastBlock.instance) {
+//             LastBlock.instance = new LastBlock();
+//         }
+//         return LastBlock.instance;
+//     }
 
-    public async getSeqno(testnet=false): Promise<number> {
-        return await LastBlock.semaphore.runExclusive(async () => {
-            return LastBlock._getSeqno(testnet)
-        })
-    }
+//     public async getSeqno(testnet=false): Promise<number> {
+//         return await LastBlock.semaphore.runExclusive(async () => {
+//             return LastBlock._getSeqno(testnet)
+//         })
+//     }
 
-    @Cacheable({ options: { expirationTime: INTER_BLOCK_DELAY_SECONDS } })
-    private static async _getSeqno(testnet: boolean): Promise<number> {
-        console.log(testnet)
-        return (await backoff(() => getClient(testnet).getLastBlock())).last.seqno
-    }
-}
-
-import { encode, decode, ExtensionCodec, DecodeError } from "@msgpack/msgpack";
-import test from "node:test";
+//     @Cacheable({ options: { expirationTime: INTER_BLOCK_DELAY_SECONDS } })
+//     private static async _getSeqno(testnet: boolean): Promise<number> {
+//         return (await backoff(() => getClient(testnet).getLastBlock())).last.seqno
+//     }
+// }
 
 
 const BIGINT_EXT_TYPE = 0; // Any in 0-127
 const ADDRESS_EXT_TYPE = 1;
+const TUPLE_READER_EXT_TYPE = 2;
 const CELL_EXT_TYPE = 3;
 const extensionCodec = new ExtensionCodec();
 extensionCodec.register({
   type: BIGINT_EXT_TYPE,
   encode(input: unknown): Uint8Array | null {
     if (typeof input === "bigint") {
-      if (input <= Number.MAX_SAFE_INTEGER && input >= Number.MIN_SAFE_INTEGER) {
+      if (input <= BigInt(Number.MAX_SAFE_INTEGER) && input >= BigInt(Number.MIN_SAFE_INTEGER)) {
         return encode(Number(input));
       } else {
         return encode(String(input));
       }
+    } else if (input instanceof BigInt) {
+        return encode(String(input));
     } else {
       return null;
     }
@@ -210,9 +212,7 @@ extensionCodec.register({
 extensionCodec.register({
     type: CELL_EXT_TYPE,
     encode(input: unknown): Uint8Array | null {
-        //console.log((input as object).constructor.name)
         if (input instanceof Cell) {
-            //console.log("here")
             return encode(input.toBoc({idx: false}))
         } else {
             return null;
@@ -220,24 +220,65 @@ extensionCodec.register({
     },
     decode(data: Uint8Array): Cell {
         const val = decode(data);
-        if (Buffer.isBuffer(val)) {
-            throw new DecodeError(`unexpected Cell source: ${val} (${typeof val})`);
-        }
         return Cell.fromBoc((val as Buffer))[0];
     },
 });
 
-function ser(r: any) {
-    console.log('serilizing')
-    console.log(r)
-    return encode(r, { extensionCodec })
+extensionCodec.register({
+    type: TUPLE_READER_EXT_TYPE,
+    encode(input: unknown): Uint8Array | null {
+        if (input instanceof TupleReader) {
+            const tuple: TupleItem[] = [];
+            while (input.remaining) {
+                tuple.push(input.pop())
+            }
+            const seralized = serializeTuple(tuple).toBoc().toString('base64');
+            // this is a DIRTY hackaround to restore mutated state. deep copy is not working
+            (input as any).items = (new TupleReader(parseTuple(Cell.fromBase64(seralized))) as any).items;
+            return encode(serializeTuple(tuple).toBoc().toString('base64'))
+        } else {
+            return null;
+        }
+    },
+    decode(data: Uint8Array): TupleReader {
+        const val = decode(data);
+        const tuple = parseTuple(Cell.fromBase64(val as string));
+        return new TupleReader(tuple)
+    },
+});
+
+function serialize(r: any) {
+        return encode(r, { extensionCodec })
 }
 
-function deser(e: any) {
+function deserialize(e: any) {
     const d = decode(e, { extensionCodec })
-    console.log('deserilizing')
-    console.log(e)
     return d
+}
+
+const mutexes = new Map<string, Semaphore>();
+
+function Sequential(target: Object, propertyKey: string, descriptor: TypedPropertyDescriptor<any>) {
+    const originalMethod = descriptor.value; // save a reference to the original method
+
+    // NOTE: Do not use arrow syntax here. Use a function expression in 
+    // order to use the correct value of `this` in this method (see notes below)
+    descriptor.value = async function(...args: any[]) {
+        const funcName = new Uint8Array(Buffer.from(propertyKey));
+        const buf = serialize(args);
+        const concat = new Uint8Array([...funcName, ...buf]);
+        const hash = crypto.createHash('md5').update(concat).digest("base64");
+        if (!mutexes.get(hash)) {
+            mutexes.set(hash, new Semaphore(1));
+        }
+        const mutex = mutexes.get(hash);
+
+        return await mutex.runExclusive(async () => {
+            const result = await originalMethod.apply(this, args);
+            return result
+        });
+    };
+    return descriptor;
 }
 
 
@@ -248,66 +289,20 @@ class WrappedClient extends TonClient4 {
         super(args)
         this.isTestnet = testnet
     }
-    // public static tupleItemHash(items: TupleItem[]): string {
-    //     let hash = "";
-    //     if (items == undefined || items.length == 0) {
-    //         return ""
+
+    // private static parseTVMExecutionResult(s: string): Awaited<ReturnType<typeof TonClient4.prototype.runMethod>>{
+    //     const parsed = JSON.parse(s);
+    //     const resultTuple = parseTuple(Cell.fromBase64(parsed.result));
+    //     const c: Awaited<ReturnType<typeof TonClient4.prototype.runMethod>> = {
+    //         exitCode: parseInt(parsed.exitCode),
+    //         result: resultTuple,
+    //         reader: new TupleReader(resultTuple),
+    //         resultRaw: undefined,
+    //         block: undefined,
+    //         shardBlock: undefined
     //     }
-    //     items.forEach(item => {
-    //         switch (item.type) {
-    //             case 'tuple': {
-    //                 hash += WrappedClient.tupleItemHash(item.items) + "\n";
-    //                 break;
-    //             }
-    //             case 'null': {
-    //                 hash += 'null\n';
-    //                 break;
-    //             }
-    //             case 'nan': {
-    //                 hash += 'nan\n';
-    //                 break;
-    //             }
-    //             case 'int': {
-    //                 hash += (item as TupleItemInt).value.toString() + '\n';
-    //                 break;
-    //             }
-    //             case 'slice':
-    //             case 'builder':
-    //             case 'cell': {
-    //                 const cell = ((item as unknown) as TupleItemCell).cell;
-    //                 hash += cell ? cell.hash().toString('hex') + '\n' : 'nullCell\n'
-    //                 break;
-    //             }
-    //             // default: {
-    //             //     throw Error(`Unsupported TupleItem type: "${item.type}"`);
-    //             // }
-    //         }
-    //     });
-    //     return hash
+    //     return c
     // }
-
-    private static serializeTVMExecutionResult(r: Awaited<ReturnType<typeof TonClient4.prototype.runMethod>>): string{
-        const obj = {
-            exitCode: r.exitCode.toString(),
-            result: serializeTuple(r.result).toBoc().toString('base64'),
-            // ignore all other
-        }
-        return JSON.stringify(obj)
-    }
-
-    private static parseTVMExecutionResult(s: string): Awaited<ReturnType<typeof TonClient4.prototype.runMethod>>{
-        const parsed = JSON.parse(s);
-        const resultTuple = parseTuple(Cell.fromBase64(parsed.result));
-        const c: Awaited<ReturnType<typeof TonClient4.prototype.runMethod>> = {
-            exitCode: parseInt(parsed.exitCode),
-            result: resultTuple,
-            reader: new TupleReader(resultTuple),
-            resultRaw: undefined,
-            block: undefined,
-            shardBlock: undefined
-        }
-        return c
-    }
 
     private static objToB64String(o: Object): string {
         return Buffer.from(JSON.stringify(o)).toString('base64');
@@ -315,52 +310,45 @@ class WrappedClient extends TonClient4 {
 
     @Cacheable({
         options: { expirationTime: INTER_BLOCK_DELAY_SECONDS },
-        argsToKey: (address: Address, methodName: string, args?: TupleItem[]) => 
+        argsToKey: (address: Address, methodName: string, args?: TupleItem[]) =>
                     WrappedClient.objToB64String([address.toString(), methodName].concat([args ? serializeTuple(args).hash().toString("base64") : "none"])),
-        serialize: WrappedClient.serializeTVMExecutionResult,
-        deserialize: WrappedClient.parseTVMExecutionResult
+        // serialize: WrappedClient.serializeTVMExecutionResult,
+        // deserialize: WrappedClient.parseTVMExecutionResult
+        serialize: serialize,
+        deserialize: deserialize
     })
     public async runMethodOnLastBlock(address: Address, methodName: string, args?: TupleItem[]): ReturnType<typeof TonClient4.prototype.runMethod> {
-        const seqno = await LastBlock.getInstance().getSeqno(this.isTestnet);
-        //console.log(`seqno: ${seqno}`)
+        const seqno = await this.getLastSeqno(this.isTestnet);
         return await this.runMethod(seqno, address, methodName, args);
     }
 
+    @Sequential
     @Cacheable({
         options: { maxSize: 10 },
         argsToKey: (seqno: number, address: Address, methodName: string, args?: TupleItem[]) =>
                     WrappedClient.objToB64String([seqno, address.toString(), methodName].concat([args ? serializeTuple(args).hash().toString("base64") : "none"])),
-        serialize: WrappedClient.serializeTVMExecutionResult,
-        deserialize: WrappedClient.parseTVMExecutionResult
+        serialize: serialize,
+        deserialize: deserialize
+        // serialize: WrappedClient.serializeTVMExecutionResult,
+        // deserialize: WrappedClient.parseTVMExecutionResult
     })
     public async runMethod(seqno: number, address: Address, methodName: string, args?: TupleItem[]): ReturnType<typeof TonClient4.prototype.runMethod> {
         return await backoff(() => super.runMethod(seqno, address, methodName, args));
     }
 
     // @Cacheable({options: { expirationTime: INTER_BLOCK_DELAY_SECONDS }})
-    // public async getLastBlock(): Promise<{
-    //     last: {
-    //         workchain: number;
-    //         shard: string;
-    //         seqno: number;
-    //         fileHash: string;
-    //         rootHash: string;
-    //     };
-    //     init: {
-    //         fileHash: string;
-    //         rootHash: string;
-    //     };
-    //     stateRootHash: string;
-    //     now: number;
-    // }> {
+    // public async getLastBlock(): ReturnType<typeof TonClient4.prototype.getLastBlock> {
     //     return await backoff(() => super.getLastBlock());
     // }
 
+    @Sequential
     @Cacheable({options: { expirationTime: INTER_BLOCK_DELAY_SECONDS }})
-    public async getLastBlock(): ReturnType<typeof TonClient4.prototype.getLastBlock> {
-        return await backoff(() => super.getLastBlock());
+    // unused arg is MANDDATORY for cache to work properly
+    public async getLastSeqno(testnet = false) {
+        return (await super.getLastBlock()).last.seqno;
     }
 
+    @Sequential
     @Cacheable({
         options: { maxSize: 10 },
         argsToKey: (seqno: number, address: Address) => WrappedClient.objToB64String([seqno, address.toString()])
@@ -369,6 +357,7 @@ class WrappedClient extends TonClient4 {
         return await backoff(() => super.getAccount(block, address));
     }
 
+    @Sequential
     @Cacheable({
         options: { maxSize: 10 },
         argsToKey: (seqno: number, address: Address) => WrappedClient.objToB64String([seqno, address.toString()])
@@ -377,11 +366,13 @@ class WrappedClient extends TonClient4 {
         return await backoff(() => super.getAccountLite(block, address));
     }
 
+    @Sequential
     @Cacheable({ options: { maxSize: 10 } })
     public async getConfig(seqno: number, ids?: number[]) {
         return await backoff(() => super.getConfig(seqno, ids));
     }
 
+    @Sequential
     @Cacheable({
         options: { maxSize: 100 },
         argsToKey: (seqno: number, address: Address) => WrappedClient.objToB64String([seqno, address.toString()])
@@ -393,12 +384,13 @@ class WrappedClient extends TonClient4 {
     @Cacheable({
         options: { maxSize: 20 },
         argsToKey: (address: Address, queue: number|null) => WrappedClient.objToB64String([address.toString(), queue]),
-        serialize: (addr: Address) => {return addr.toString()},
-        deserialize: (addr: string) => {return Address.parse(addr)},
+        serialize: serialize,
+        deserialize: deserialize
+        // serialize: (addr: Address) => {return addr.toString()},
+        // deserialize: (addr: string) => {return Address.parse(addr)},
     })
     public async resolveContractProxy(address: Address, queue=null) {
-        const method = queue == null ? 'get_proxy' : 'get_proxies' 
-        //console.log(`will run: ${method} on address: ${address.toString()}, queue: ${queue}, isTestnet: ${this.isTestnet}`)
+        const method = queue == null ? 'get_proxy' : 'get_proxies';
         const ret = (await this.runMethodOnLastBlock(address, method));
         if (ret.exitCode != 0 && ret.exitCode != 1) {
             throw Error(`Got unexpextedexit code from ${method} method call: ${ret.exitCode}`)
@@ -412,8 +404,10 @@ class WrappedClient extends TonClient4 {
 
     @Cacheable({
         options: { maxSize: 20 },
-        serialize: (addr: Address) => {return addr.toString()},
-        deserialize: (addr: string) => {return Address.parse(addr)},
+        serialize: serialize,
+        deserialize: deserialize
+        // serialize: (addr: Address) => {return addr.toString()},
+        // deserialize: (addr: string) => {return Address.parse(addr)},
     })
     public async resolveController(address: Address) {
         const ret = (await this.runMethodOnLastBlock(address, 'get_controller'));
@@ -425,8 +419,10 @@ class WrappedClient extends TonClient4 {
 
     @Cacheable({
         options: { maxSize: 20 },
-        serialize: (addr: Address) => {return addr.toString()},
-        deserialize: (addr: string) => {return Address.parse(addr)},
+        serialize: serialize,
+        deserialize: deserialize
+        // serialize: (addr: Address) => {return addr.toString()},
+        // deserialize: (addr: string) => {return Address.parse(addr)},
     })
     public async resolveOwner(address: Address) {
         const res = (await this.runMethodOnLastBlock(address, 'get_owner')).result.pop();
@@ -434,6 +430,15 @@ class WrappedClient extends TonClient4 {
             return res.cell.beginParse().loadAddress();
         }
         throw Error('Got invalid return type from get_owner method of: ' + address.toString());
+    }
+
+    @Cacheable({ options: { expirationTime: 5 * 60 } })
+    static async getGlobalApy(testnet=false) {
+        const network = testnet ? 'testnet' : 'mainnet'
+        const globalApy = parseFloat(
+            ((await backoff(() => axios.get(`https://connect.tonhubapi.com/net/${network}/elections/latest/apy`))).data as { apy: string }).apy
+        )
+        return globalApy
     }
 
     // public static async open<T extends Contract>(contract: T) {
@@ -453,11 +458,15 @@ function getWC(testnet=false) {
     return wc
 }
 
+function getStakeToAllocateLiquid(available: bigint, minStake: bigint) {
+    const EPS = toNano(1);
+    return (minStake + EPS) * BigInt(2) <= available ? available / BigInt(2) : available
+}
+
 async function getStakingState() {
     const result = new Map<string, StakingState>();
     async function _getStakingState(contractName: string, contractAddress: Address, queue=null, testnet=false) {
-        const seqno = await LastBlock.getInstance().getSeqno(testnet);
-        //console.log(`call: contractName ${contractName}, contractAddress ${contractAddress}, queue ${queue}, testnet ${testnet}`)
+        const seqno = await getWC(testnet).getLastSeqno(testnet);
         async function _getElectorStakeReqestSeqno() {
             const proxyContractAddress = await getWC(testnet).resolveContractProxy(contractAddress, queue);
             const accountState = await getWC(testnet).getAccountLite(seqno, proxyContractAddress);
@@ -506,10 +515,6 @@ async function getStakingState() {
         ([contractName, contractAddress]) => _getStakingState(contractName, contractAddress)
     );
     const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[ ...currentValue, 0], [...currentValue, 1]]), [])
-
-    // console.log(liquidPools)
-    // console.log(liquidPools["lqpool_testnet"].network=="testnet")
-    
     
     const lqPromises = lqTriplets.map(
         ([contractName, contractAddress, queue]) => _getStakingState(contractName, contractAddress, queue, liquidPools[contractName].network == "testnet")
@@ -590,25 +595,16 @@ async function getStakingStats() {
     //     bonuses = ex.bonuses;
     // }
     //const globalApy = parseFloat(APY(startWorkTime, electionEntities, electionsHistory, bonuses, validatorsElectedFor));
-    class GlobalApy {
-        @Cacheable({ options: { expirationTime: 5 * 60 } })
-        static async get(testnet=false) {
-            const network = testnet ? 'testnet' : 'mainnet'
-            const globalApy = parseFloat(
-                ((await backoff(() => axios.get(`https://connect.tonhubapi.com/net/${network}/elections/latest/apy`))).data as { apy: string }).apy
-            )
-            return globalApy
-        }
-    }
+
 
     const result = new Map<string, {globalApy: number, poolApy: number, poolFee: number, daoShare: number, daoDenominator: number}>();
     async function _getStakingStats(contractName: string, contractAddress: Address, liquid=false, testnet=false) {
-        const seqno = await LastBlock.getInstance().getSeqno(testnet);        
+        const seqno = await getWC(testnet).getLastSeqno(testnet);
         const method = liquid ? 'get_pool_status' : 'get_params'
         const poolParamsStack = (await getWC(testnet).runMethodOnLastBlock(contractAddress, method)).result;
         const poolFeeParamIndex = liquid ? 8 : 5
         const poolFee = parseInt(((poolParamsStack[poolFeeParamIndex] as TupleItemInt).value / BigInt(100)).toString());
-        const poolApy = (await GlobalApy.get(testnet) - await GlobalApy.get(testnet) * (poolFee / 100)).toFixed(2);
+        const poolApy = (await WrappedClient.getGlobalApy(testnet) - await WrappedClient.getGlobalApy(testnet) * (poolFee / 100)).toFixed(2);
         let denominator = 1;
         let share = 1;
         const ownerAddress = await getWC(testnet).resolveOwner(contractAddress);
@@ -631,7 +627,7 @@ async function getStakingStats() {
                 }
             }
         }
-        const value = { globalApy: await GlobalApy.get(testnet), poolApy: parseFloat(poolApy), poolFee, daoShare: share, daoDenominator: denominator }
+        const value = { globalApy: await WrappedClient.getGlobalApy(testnet), poolApy: parseFloat(poolApy), poolFee, daoShare: share, daoDenominator: denominator }
         if (!liquid) {
             result.set(contractName, value);
         } else {
@@ -654,7 +650,7 @@ async function getStakingStats() {
 }
 
 async function getComplaintsAddresses() {
-    const seqno = await LastBlock.getInstance().getSeqno();
+    const seqno = await getWC(false).getLastSeqno(false);
     try {
         const srializedConfigCell = (await getWC().getConfig(seqno, [32])).config.cell;
         const prevValidators = configParseValidatorSet(loadConfigParamById(srializedConfigCell, 32).beginParse());
@@ -695,7 +691,7 @@ async function timeBeforeElectionEnd() {
     class ElectionWatcher {
         @Cacheable({ options: { expirationTime: INTER_BLOCK_DELAY_SECONDS } })
         static async timeBeforeElectionEnd(testnet: boolean) {
-            const seqno = await LastBlock.getInstance().getSeqno(testnet);
+            const seqno = await getWC(testnet).getLastSeqno(testnet);
             const srializedConfigCell = (await getWC(testnet).getConfig(seqno, [15])).config.cell;
             const config15 = configParse15(loadConfigParamById(srializedConfigCell, 15).beginParse());
             const elector = getWC(testnet).openAt(seqno, new ElectorContract());
@@ -739,12 +735,12 @@ type PoolStatus = {
     ctx_balance: number,
     ctx_balance_sent: number,
     ctx_balance_pending_withdraw: number,
-    ctx_balance_withdraw: number  
+    ctx_balance_withdraw: number,
+    steak_for_next_elections: number
 }
 type PoolStatusGeneric = PoolStatus & {
     type?: "generic",
     ctx_balance_pending_deposits: number,
-    steak_for_next_elections: number,
 }
 
 type PoolStatusLiquid = PoolStatus & {
@@ -753,28 +749,6 @@ type PoolStatusLiquid = PoolStatus & {
     ctx_round_id: number,
     ctx_minter_total_supply: number,
 }
-
-// type PoolStatusGeneric = {
-//     type?: "generic";
-//     ctx_balance: number,
-//     ctx_balance_sent: number,
-//     ctx_balance_pending_deposits: number,
-//     steak_for_next_elections: number,
-//     ctx_balance_pending_withdraw: number,
-//     ctx_balance_withdraw: number
-// }
-
-// type PoolStatusLiquid = {
-//     type?: "liquid";
-//     exchange_rate: number,
-//     ctx_round_id: number,
-//     ctx_minter_total_supply: number,
-//     ctx_balance: number,
-//     ctx_balance_sent: number,
-//     ctx_balance_pending_withdraw: number,
-//     ctx_balance_withdraw: number
-// }
-
 
 async function getStake() {
     const result = new Map<string, PoolStatusGeneric|PoolStatusLiquid>();
@@ -804,7 +778,7 @@ async function getStake() {
         delete stat.type;
         result.set(contractName, stat);
     }
-    async function _getStakeLiquid(contractName: string, contractAddress: Address, testnet: boolean) {
+    async function _getStakeLiquid(contractName: string, contractAddress: Address, testnet: boolean, minStake: number) {
         const ret = (await getWC(testnet).runMethodOnLastBlock(contractAddress, 'get_pool_status'));
         if (ret.exitCode === 0 || ret.exitCode === 1) {
             if (ret.result[0].type !== 'int') {
@@ -816,6 +790,13 @@ async function getStake() {
 
         const exchange_rate = parseFloat(fromNano(ret.reader.readBigNumber()));
         const ctx_round_id = parseFloat(fromNano(ret.reader.readBigNumber()));
+        ret.reader.skip(); // enabled
+        ret.reader.skip(); // udpates_enabled
+        ret.reader.skip(); // min_stake
+        ret.reader.skip(); // deposit_fee
+        ret.reader.skip(); // withdraw_fee
+        ret.reader.skip(); // receipt_price
+        ret.reader.skip(); // pool_fee
         const ctx_minter_total_supply = parseFloat(fromNano(ret.reader.readBigNumber()));
         const ctx_balance = parseFloat(fromNano(ret.reader.readBigNumber()));
         const ctx_balance_sent = parseFloat(fromNano(ret.reader.readBigNumber()));
@@ -829,7 +810,8 @@ async function getStake() {
             ctx_balance,
             ctx_balance_sent,
             ctx_balance_pending_withdraw,
-            ctx_balance_withdraw
+            ctx_balance_withdraw,
+            steak_for_next_elections: parseFloat(fromNano(getStakeToAllocateLiquid(toNano(ctx_balance - ctx_balance_pending_withdraw), toNano(minStake))))
         }
         delete stat.type;
 
@@ -843,7 +825,7 @@ async function getStake() {
         ([contractName, contractAddress]) => _getStakeGeneric(contractName, contractAddress)
     );
     const lqPromises = Object.entries(liquidContracts).map(
-        ([contractName, contractAddress]) => _getStakeLiquid(contractName, contractAddress, liquidPools[contractName].network == "testnet")
+        ([contractName, contractAddress]) => _getStakeLiquid(contractName, contractAddress, liquidPools[contractName].network == "testnet", liquidPools[contractName].minStake)
     );
     await Promise.all(genericPromises.concat(lqPromises));
 
@@ -851,18 +833,16 @@ async function getStake() {
 }
 
 async function electionsQuerySent() {
-    //const seqno = await LastBlock.getInstance().getSeqno();
     const result = new Map<string, boolean>();
     const stakes = await getStake();
-
 
     class Elections {
         @Cacheable({
             options: { expirationTime: INTER_BLOCK_DELAY_SECONDS },
             // serialize: (r) => {return encode(r, { extensionCodec })},
             // deserialize: (e) => {return decode(e, { extensionCodec })}
-            serialize: ser,
-            deserialize: deser
+            serialize: serialize,
+            deserialize: deserialize
         })
         static async getElectionEntities(seqno: number, testnet: boolean) {
             const elector = getWC(testnet).openAt(seqno, new ElectorContract());
@@ -871,19 +851,19 @@ async function electionsQuerySent() {
         }
     }
 
-    async function _electionsQuerySent(contractName: string, contractAddress: Address, maxStake: number, ADNLs: string[], queue=null, testnet=false) {
-        const seqno = await LastBlock.getInstance().getSeqno(testnet);
+    async function _electionsQuerySent(contractName: string, contractAddress: Address, maxStake: number, ADNLs: string[], queue=null, testnet=false, minStake=0n) {
+        const metricName = queue == null ? contractName : `${contractName}_${queue + 1}`;
+        const seqno = await getWC(testnet).getLastSeqno(testnet);
         const electionEntities = await Elections.getElectionEntities(seqno, testnet);
         if (!electionEntities || !electionEntities.entities || electionEntities.entities.length == 0) {
-            result.set(contractName, false);
+            result.set(metricName, false);
             return
         }
         const proxyContractAddress = await backoff(() => getWC(testnet).resolveContractProxy(contractAddress, queue));
-        const metricName = queue == null ? contractName : `${contractName}_${queue + 1}`;
-        //TODO: it must be different for lq
         const contractStake = stakes.get(metricName);
-        //const maxStake = pools[pool_name].maxStake;
-        const validatorsNeeded = Math.ceil(contractStake.ctx_balance / maxStake);
+        var toAllocate = queue == null ? contractStake.ctx_balance : parseFloat(fromNano(getStakeToAllocateLiquid(toNano(contractStake.ctx_balance), minStake)));
+        // the most stupid allocation logic. if it will fail, ther is definitely some troubles going on
+        const validatorsNeeded = Math.ceil(toAllocate / maxStake);
         const querySentForADNLs = new Map<string, string>();
         for (const entitie of electionEntities.entities) {
             querySentForADNLs.set(entitie.adnl.toString('hex'), entitie.address.toString());
@@ -914,7 +894,8 @@ async function electionsQuerySent() {
             contractAddress,
             liquidPools[contractName].maxStake,
             liquidPools[contractName].ADNLs, queue,
-            liquidPools[contractName].network == "testnet"
+            liquidPools[contractName].network == "testnet",
+            toNano(liquidPools[contractName].minStake)
         )
     );
     await Promise.all(promises.concat(lqPromises))
@@ -922,30 +903,22 @@ async function electionsQuerySent() {
     return result
 }
 
-
-// (BigInt.prototype as any).toJSON = function () {
-//     return this.toString();
-//   };
-
 async function mustParticipateInCycle() {
 
     class ElectionsAddresses {
-        // @Cacheable({
-        //     options: { expirationTime: INTER_BLOCK_DELAY_SECONDS},
-        //     // serialize: (result: Address[]) => {return result.map((addr: Address) => {return addr.toString()})},
-        //     // deserialize: (result: string[]) => {return result.map((addr: string) => {return Address.parse(addr)})}
-        // })
+        @Cacheable({
+            options: { expirationTime: INTER_BLOCK_DELAY_SECONDS},
+            // serialize: (result: Address[]) => {return result.map((addr: Address) => {return addr.toString()})},
+            // deserialize: (result: string[]) => {return result.map((addr: string) => {return Address.parse(addr)})}
+        })
         static async get(testnet=false) {
-            const seqno = await LastBlock.getInstance().getSeqno(testnet);
+            const seqno = await getWC(testnet).getLastSeqno(testnet);
             const srializedConfigCell = (await getWC(testnet).getConfig(seqno, [34])).config.cell;
             const currentValidators = configParseValidatorSet(loadConfigParamById(srializedConfigCell, 34).beginParse());
             const elector = getWC(testnet).openAt(seqno, new ElectorContract());
             const elections = await backoff(() => elector.getPastElections());
-            //console.log(elections[0].frozen)
             const ex = elections.find(v => v.id === currentValidators!.timeSince)!;
-            //console.log(`testnet: ${testnet}, ex:`)
-            //console.log(ex)
-            const validatorProxyAddresses = [];
+            const validatorProxyAddresses: string[] = [];
             for (const key of currentValidators!.list!.keys()) {
                 const val:{publicKey: Buffer} = currentValidators!.list!.get(key)!;
                 const v = ex.frozen.get(BigInt(`0x${val.publicKey.toString('hex')}`).toString());
@@ -959,7 +932,9 @@ async function mustParticipateInCycle() {
     async function _mustParticipateInCycle(contractName: string, contractAddress: Address, queue=null, testnet=false) {
         const proxyContractAddress = await getWC(testnet).resolveContractProxy(contractAddress, queue);
         const metricName = queue == null ? contractName : `${contractName}_${queue + 1}`
-        result.set(metricName, !(await ElectionsAddresses.get(testnet)).includes(proxyContractAddress.toString()))
+        const electionsAddresses = await ElectionsAddresses.get(testnet);
+        const includes = electionsAddresses.includes(proxyContractAddress.toString());
+        result.set(metricName, !includes)
     }
     const genericPromises = Object.entries(genericContracts).map(
             ([contractName, contractAddress]) => _mustParticipateInCycle(contractName, contractAddress)
@@ -1018,7 +993,7 @@ async function unowned(){
 async function controllersBalance(): Promise<Map<string, number>> {
     const result = new Map<string, number>();
     async function _controllersBalance(contractName: string, contractAddress: Address, queue=null, testnet=false) {
-        const seqno = await LastBlock.getInstance().getSeqno(testnet);
+        const seqno = await getWC(testnet).getLastSeqno(testnet);
         const controllerAddress = await getWC(testnet).resolveController(contractAddress);
         const balance = await getWC(testnet).getBalance(seqno, controllerAddress);
         const metricName = queue == null ? contractName : `${contractName}_${queue + 1}`
@@ -1037,7 +1012,7 @@ async function controllersBalance(): Promise<Map<string, number>> {
 }
 
 async function getValidatorsStats(): Promise<{quantity: number, totalStake: number}> {
-    const seqno = await LastBlock.getInstance().getSeqno();
+    const seqno = await getWC(false).getLastSeqno(false);
     const srializedConfigCell = (await getWC().getConfig(seqno, [34])).config.cell;
     const currentValidators = configParseValidatorSet(loadConfigParamById(srializedConfigCell, 34).beginParse());
     const elector = getWC().open(new ElectorContract());
@@ -1054,7 +1029,7 @@ async function getValidatorsStats(): Promise<{quantity: number, totalStake: numb
 }
 
 async function getNextElectionsTime(): Promise<number> {
-    const seqno = await LastBlock.getInstance().getSeqno();
+    const seqno = await getWC(false).getLastSeqno(false);
     const srializedConfigCell = (await getWC().getConfig(seqno, [15, 34, 36])).config.cell;
     const config15 = configParse15(loadConfigParamById(srializedConfigCell, 15).beginParse());
     const currentValidators = configParseValidatorSet(loadConfigParamById(srializedConfigCell, 34).beginParse());
@@ -1183,7 +1158,6 @@ async function exposeNextElectionsTime() {
 }
 
 const collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle, poolsSize, unowned, controllersBalance, getStakingStats];
-//const collectFunctions = [getStakingState];
 const seconds = 30;
 const interval = seconds * 1000;
 
@@ -1218,8 +1192,6 @@ async function startExporter() {
 
 
 async function main() {
-    //console.log(await getWC(false).resolveContractProxy(Address.parse("EQBYtJtQzU3M-AI23gFM91tW6kYlblVtjej59gS8P3uJ_ePN"), null));
-    //console.log(await getClient(true).runMethod(13976762, Address.parse("kQDDu7fKsyle3Gqfae0wayvOQm3RN6gw4b_7QzpNAWLIQUId"), "get_staking_status", [{ type: 'int', value: BigInt(0)}]))
     await startExporter();
 }
 
