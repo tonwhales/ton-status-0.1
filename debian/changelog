@@ -1,3 +1,9 @@
+ton-status (0.1-32) focal; urgency=medium
+
+  * Fixed paths
+
+ -- Yma Het <yma.het@gmail.com>  Thu, 1 Nov 2023 12:07:07 +0200
+
 ton-status (0.1-31) focal; urgency=medium
 
   * Added support of liquid staking

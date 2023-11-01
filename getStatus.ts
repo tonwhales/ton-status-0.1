@@ -29,7 +29,7 @@ type Config = {
     }},
 }
 
-const conf: Config = JSON.parse(fs.readFileSync('config.json.new', 'utf-8'));
+const conf: Config = JSON.parse(fs.readFileSync('/etc/ton-status/config.json.new', 'utf-8'));
 const pools = conf.pools;
 const liquidPools = conf.liquidPools;
 
