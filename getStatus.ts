@@ -476,9 +476,13 @@ async function getStakingState() {
             const accountState = await getWC(testnet).getAccountLite(seqno, proxyContractAddress);
             const txes = await getWC(testnet).getAccountTransactions(proxyContractAddress, BigInt(accountState.account.last.lt), Buffer.from(accountState.account.last.hash, 'base64'));
             for (const tx of txes) {
-                const opId = tx.tx.inMessage.body.beginParse().loadUint(32);
-                if (opId == 0x4e73744b && (tx.tx.inMessage.info.src as Address).equals(contractAddress)) { // int elector::stake::request() asm "0x4e73744b PUSHINT";
-                    return tx.block.seqno
+                try {
+                    const opId = tx.tx.inMessage.body.beginParse().loadUint(32);
+                    if (opId == 0x4e73744b && (tx.tx.inMessage.info.src as Address).equals(contractAddress)) { // int elector::stake::request() asm "0x4e73744b PUSHINT";
+                        return tx.block.seqno
+                    }
+                } catch (e) {
+                    console.log(`Error trying to parse proxy transaction: \n${e}`)
                 }
             }
             return 0
