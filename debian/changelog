@@ -1,3 +1,9 @@
+ton-status (0.1-33) focal; urgency=medium
+
+  * Adjusted for new version of contract
+
+ -- Yma Het <yma.het@gmail.com>  Thu, 14 Nov 2023 17:54:29 +0200
+
 ton-status (0.1-32) focal; urgency=medium
 
   * Fixed paths

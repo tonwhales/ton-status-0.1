@@ -29,7 +29,11 @@ type Config = {
     }},
 }
 
-const conf: Config = JSON.parse(fs.readFileSync('/etc/ton-status/config.json.new', 'utf-8'));
+const CONFIG_FILENAME = 'config.json.new';
+const SYSTEM_CONFIG_PATH = '/etc/ton-status/';
+
+const configPath = fs.existsSync(SYSTEM_CONFIG_PATH + CONFIG_FILENAME) ? SYSTEM_CONFIG_PATH + CONFIG_FILENAME : `./${CONFIG_FILENAME}`
+const conf: Config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
 const pools = conf.pools;
 const liquidPools = conf.liquidPools;
 
@@ -602,7 +606,7 @@ async function getStakingStats() {
         const seqno = await getWC(testnet).getLastSeqno(testnet);
         const method = liquid ? 'get_pool_status' : 'get_params'
         const poolParamsStack = (await getWC(testnet).runMethodOnLastBlock(contractAddress, method)).result;
-        const poolFeeParamIndex = liquid ? 8 : 5
+        const poolFeeParamIndex = liquid ? 9 : 5
         const poolFee = parseInt(((poolParamsStack[poolFeeParamIndex] as TupleItemInt).value / BigInt(100)).toString());
         const poolApy = (await WrappedClient.getGlobalApy(testnet) - await WrappedClient.getGlobalApy(testnet) * (poolFee / 100)).toFixed(2);
         let denominator = 1;
@@ -745,7 +749,8 @@ type PoolStatusGeneric = PoolStatus & {
 
 type PoolStatusLiquid = PoolStatus & {
     type?: "liquid",
-    exchange_rate: number,
+    deposit_rate: number,
+    withdraw_rate: number,
     ctx_round_id: number,
     ctx_minter_total_supply: number,
 }
@@ -788,7 +793,8 @@ async function getStake() {
             throw Error(`Got unexpextedexit code from get_pool_status method call: ${ret.exitCode}`)
         }
 
-        const exchange_rate = parseFloat(fromNano(ret.reader.readBigNumber()));
+        const deposit_rate = parseFloat(fromNano(ret.reader.readBigNumber()));
+        const withdraw_rate = parseFloat(fromNano(ret.reader.readBigNumber()));
         const ctx_round_id = parseFloat(fromNano(ret.reader.readBigNumber()));
         ret.reader.skip(); // enabled
         ret.reader.skip(); // udpates_enabled
@@ -804,7 +810,8 @@ async function getStake() {
         const ctx_balance_withdraw = parseFloat(fromNano(ret.reader.readBigNumber()));
 
         const stat: PoolStatusLiquid = {
-            exchange_rate,
+            deposit_rate,
+            withdraw_rate,
             ctx_round_id,
             ctx_minter_total_supply,
             ctx_balance,
