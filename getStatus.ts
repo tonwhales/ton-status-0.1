@@ -822,7 +822,7 @@ async function getStake() {
             ctx_balance_sent,
             ctx_balance_pending_withdraw,
             ctx_balance_withdraw,
-            steak_for_next_elections: parseFloat(fromNano(getStakeToAllocateLiquid(toNano(ctx_balance - ctx_balance_pending_withdraw), toNano(minStake))))
+            steak_for_next_elections: parseFloat(fromNano(getStakeToAllocateLiquid(toNano((ctx_balance - ctx_balance_pending_withdraw).toFixed(2)), toNano(minStake))))
         }
         delete stat.type;
 
@@ -872,7 +872,7 @@ async function electionsQuerySent() {
         }
         const proxyContractAddress = await backoff(() => getWC(testnet).resolveContractProxy(contractAddress, queue));
         const contractStake = stakes.get(metricName);
-        var toAllocate = queue == null ? contractStake.ctx_balance : parseFloat(fromNano(getStakeToAllocateLiquid(toNano(contractStake.ctx_balance), minStake)));
+        var toAllocate = queue == null ? contractStake.ctx_balance : parseFloat(fromNano(getStakeToAllocateLiquid(toNano(contractStake.ctx_balance.toFixed(2)), minStake)));
         // the most stupid allocation logic. if it will fail, ther is definitely some troubles going on
         const validatorsNeeded = Math.ceil(toAllocate / maxStake);
         const querySentForADNLs = new Map<string, string>();
