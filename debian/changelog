@@ -1,3 +1,9 @@
+ton-status (0.1-35) focal; urgency=medium
+
+  * Added staking contract balance metric
+
+ -- Yma Het <yma.het@gmail.com>  Thu, 21 Dec 2023 11:37:41 +0200
+
 ton-status (0.1-34) focal; urgency=medium
 
   * Fixed bug with to high precesion

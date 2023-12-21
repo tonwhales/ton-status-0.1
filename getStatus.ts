@@ -96,6 +96,7 @@ type StakingState = {
     couldUnlock: boolean;
     locked?: boolean;
     finalized?: boolean;
+    stakingContractBalance: number
 };
 
 
@@ -487,14 +488,14 @@ async function getStakingState() {
             }
             return 0
         }
-        const [ret, electorStakeReqestSeqno] = await Promise.all(
-            [getWC(testnet).runMethodOnLastBlock(
+        const [ret, electorStakeReqestSeqno, balance] = await Promise.all([
+            getWC(testnet).runMethodOnLastBlock(
                 contractAddress, 
                 'get_staking_status',
                 queue == null ? [] : [{ type: 'int', value: BigInt(queue)}]),
-            _getElectorStakeReqestSeqno()
-            ]
-        );
+            _getElectorStakeReqestSeqno(),
+            getWC(testnet).getBalance(seqno, contractAddress)
+        ]);
         // https://docs.ton.org/learn/tvm-instructions/tvm-exit-codes
         // 1 is !!!ALTERNATIVE!!! success exit code
         if (ret.exitCode != 0 && ret.exitCode != 1) {
@@ -510,7 +511,7 @@ async function getStakingState() {
         const couldUnlock = ret.reader.readNumber() === -1;
         const lockedOrFinalized = ret.reader.readNumber() === -1;
         const metricName = queue == null ? contractName : `${contractName}_${queue + 1}`
-        const state: StakingState = {stakeAt, stakeUntil, stakeSent, querySent, couldUnlock}
+        const state: StakingState = {stakeAt, stakeUntil, stakeSent, querySent, couldUnlock, stakingContractBalance: parseFloat(fromNano(balance))}
         if (queue == null) {
             state.locked = lockedOrFinalized;
         } else {
