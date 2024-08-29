@@ -1,4 +1,4 @@
-import { Address, TonClient4, TupleItem, TupleItemInt, TupleReader, fromNano, Cell, configParse15, configParseValidatorSet, loadConfigParamById, ElectorContract, Dictionary, parseTuple, serializeTuple, TonClient4Parameters, toNano } from "@ton/ton";
+import { Address, TonClient4, TupleItem, TupleItemInt, TupleReader, fromNano, Cell, configParse15, configParse16, configParseValidatorSet, loadConfigParamById, ElectorContract, Dictionary, parseTuple, serializeTuple, TonClient4Parameters, toNano } from "@ton/ton";
 
 import fs from 'fs';
 import { createBackoff } from "teslabot";
@@ -15,49 +15,60 @@ const PROMETHEUS_PORT = 8080;
 
 type Config = {
     whalesStakingOwner: string,
-    pools: {[name: string]: {
-        maxStake: number,
-        contracts: Map<string, string>,
-        ADNLs: string[]
-    }}
-    liquidPools: {[name: string]: {
-        network: string,
-        minStake: number,
-        maxStake: number,
-        contract: string,
-        ADNLs: string[]
-    }},
+    pools: {
+        [name: string]: {
+            maxStake: number,
+            contracts: Map<string, string>,
+            ADNLs: string[]
+        }
+    }
+    liquidPools: {
+        [name: string]: {
+            network: string,
+            minStake: number,
+            maxStake: number,
+            contract: string,
+            ADNLs: string[]
+        }
+    },
 }
 
 const CONFIG_FILENAME = 'config.json.new';
 const SYSTEM_CONFIG_PATH = '/etc/ton-status/';
 
-const configPath = fs.existsSync(SYSTEM_CONFIG_PATH + CONFIG_FILENAME) ? SYSTEM_CONFIG_PATH + CONFIG_FILENAME : `./${CONFIG_FILENAME}`
-const conf: Config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-const pools = conf.pools;
-const liquidPools = conf.liquidPools;
+var conf: Config = undefined;
+var pools: Config["pools"] = undefined;
+var liquidPools: Config["liquidPools"] = undefined;
 
 
 interface Contracts {
     [name: string]: Address;
 }
-const genericContracts: Contracts = {};
-for (const pool_name of Object.keys(pools)) {
-    for (const contractName of Object.keys(pools[pool_name].contracts)) {
-        pools[pool_name].contracts[contractName] = Address.parse(pools[pool_name].contracts[contractName]);
-        genericContracts[contractName] = pools[pool_name].contracts[contractName];
-    }
+var genericContracts: Contracts = {};
+
+var liquidContracts: Contracts = {};
+
+
+let OVERRIDE_SEQNO_MAINNET = 0;
+let OVERRIDE_SEQNO_TESTNET = 0;
+
+export function setOverrideSeqno(seqno_mainnet: number, seqno_testnet: number) {
+    OVERRIDE_SEQNO_MAINNET = seqno_mainnet;
+    OVERRIDE_SEQNO_TESTNET = seqno_testnet;
 }
-const liquidContracts: Contracts = {};
-for (const pool_name of Object.keys(liquidPools)) {
-    liquidContracts[pool_name] = Address.parse(liquidPools[pool_name].contract)
+
+export function overrideConfig(oPools: Config["pools"], oLiquidPools: Config["liquidPools"], oGenericContracts: Contracts, oLiquidContracts: Contracts) {
+    pools = oPools;
+    liquidPools = oLiquidPools;
+    genericContracts = oGenericContracts;
+    liquidContracts = oLiquidContracts;
 }
 
 const v4Client = new TonClient4({ endpoint: "https://mainnet-v4.tonhubapi.com", timeout: 10000 });
 const v4ClientTestnet = new TonClient4({ endpoint: "https://sandbox-v4.tonhubapi.com", timeout: 10000 });
 const backoff = createBackoff({ onError: (e, i) => i > 3 && console.warn(e), maxFailureCount: 5 });
 
-function getClient(testnet=false) {
+function getClient(testnet = false) {
     if (testnet) {
         return v4ClientTestnet
     }
@@ -174,27 +185,27 @@ const TUPLE_READER_EXT_TYPE = 2;
 const CELL_EXT_TYPE = 3;
 const extensionCodec = new ExtensionCodec();
 extensionCodec.register({
-  type: BIGINT_EXT_TYPE,
-  encode(input: unknown): Uint8Array | null {
-    if (typeof input === "bigint") {
-      if (input <= BigInt(Number.MAX_SAFE_INTEGER) && input >= BigInt(Number.MIN_SAFE_INTEGER)) {
-        return encode(Number(input));
-      } else {
-        return encode(String(input));
-      }
-    } else if (input instanceof BigInt) {
-        return encode(String(input));
-    } else {
-      return null;
-    }
-  },
-  decode(data: Uint8Array): bigint {
-    const val = decode(data);
-    if (!(typeof val === "string" || typeof val === "number")) {
-      throw new DecodeError(`unexpected BigInt source: ${val} (${typeof val})`);
-    }
-    return BigInt(val);
-  },
+    type: BIGINT_EXT_TYPE,
+    encode(input: unknown): Uint8Array | null {
+        if (typeof input === "bigint") {
+            if (input <= BigInt(Number.MAX_SAFE_INTEGER) && input >= BigInt(Number.MIN_SAFE_INTEGER)) {
+                return encode(Number(input));
+            } else {
+                return encode(String(input));
+            }
+        } else if (input instanceof BigInt) {
+            return encode(String(input));
+        } else {
+            return null;
+        }
+    },
+    decode(data: Uint8Array): bigint {
+        const val = decode(data);
+        if (!(typeof val === "string" || typeof val === "number")) {
+            throw new DecodeError(`unexpected BigInt source: ${val} (${typeof val})`);
+        }
+        return BigInt(val);
+    },
 });
 extensionCodec.register({
     type: ADDRESS_EXT_TYPE,
@@ -218,7 +229,7 @@ extensionCodec.register({
     type: CELL_EXT_TYPE,
     encode(input: unknown): Uint8Array | null {
         if (input instanceof Cell) {
-            return encode(input.toBoc({idx: false}))
+            return encode(input.toBoc({ idx: false }))
         } else {
             return null;
         }
@@ -253,12 +264,11 @@ extensionCodec.register({
 });
 
 function serialize(r: any) {
-        return encode(r, { extensionCodec })
+    return encode(r, { extensionCodec })
 }
 
 function deserialize(e: any) {
-    const d = decode(e, { extensionCodec })
-    return d
+    return decode(e, { extensionCodec })
 }
 
 const mutexes = new Map<string, Semaphore>();
@@ -268,7 +278,7 @@ function Sequential(target: Object, propertyKey: string, descriptor: TypedProper
 
     // NOTE: Do not use arrow syntax here. Use a function expression in 
     // order to use the correct value of `this` in this method (see notes below)
-    descriptor.value = async function(...args: any[]) {
+    descriptor.value = async function (...args: any[]) {
         const funcName = new Uint8Array(Buffer.from(propertyKey));
         const buf = serialize(args);
         const concat = new Uint8Array([...funcName, ...buf]);
@@ -316,7 +326,7 @@ class WrappedClient extends TonClient4 {
     @Cacheable({
         options: { expirationTime: INTER_BLOCK_DELAY_SECONDS },
         argsToKey: (address: Address, methodName: string, args?: TupleItem[]) =>
-                    WrappedClient.objToB64String([address.toString(), methodName].concat([args ? serializeTuple(args).hash().toString("base64") : "none"])),
+            WrappedClient.objToB64String([address.toString(), methodName].concat([args ? serializeTuple(args).hash().toString("base64") : "none"])),
         // serialize: WrappedClient.serializeTVMExecutionResult,
         // deserialize: WrappedClient.parseTVMExecutionResult
         serialize: serialize,
@@ -331,7 +341,7 @@ class WrappedClient extends TonClient4 {
     @Cacheable({
         options: { maxSize: 10 },
         argsToKey: (seqno: number, address: Address, methodName: string, args?: TupleItem[]) =>
-                    WrappedClient.objToB64String([seqno, address.toString(), methodName].concat([args ? serializeTuple(args).hash().toString("base64") : "none"])),
+            WrappedClient.objToB64String([seqno, address.toString(), methodName].concat([args ? serializeTuple(args).hash().toString("base64") : "none"])),
         serialize: serialize,
         deserialize: deserialize
         // serialize: WrappedClient.serializeTVMExecutionResult,
@@ -347,10 +357,11 @@ class WrappedClient extends TonClient4 {
     // }
 
     @Sequential
-    @Cacheable({options: { expirationTime: INTER_BLOCK_DELAY_SECONDS }})
+    @Cacheable({ options: { expirationTime: INTER_BLOCK_DELAY_SECONDS } })
     // unused arg is MANDDATORY for cache to work properly
     public async getLastSeqno(testnet = false) {
-        return (await super.getLastBlock()).last.seqno;
+        const overrideSeqno = testnet ? OVERRIDE_SEQNO_TESTNET : OVERRIDE_SEQNO_MAINNET
+        return overrideSeqno ? overrideSeqno : (await super.getLastBlock()).last.seqno;
     }
 
     @Sequential
@@ -388,13 +399,13 @@ class WrappedClient extends TonClient4 {
 
     @Cacheable({
         options: { maxSize: 20 },
-        argsToKey: (address: Address, queue: number|null) => WrappedClient.objToB64String([address.toString(), queue]),
+        argsToKey: (address: Address, queue: number | null) => WrappedClient.objToB64String([address.toString(), queue]),
         serialize: serialize,
         deserialize: deserialize
         // serialize: (addr: Address) => {return addr.toString()},
         // deserialize: (addr: string) => {return Address.parse(addr)},
     })
-    public async resolveContractProxy(address: Address, queue=null) {
+    public async resolveContractProxy(address: Address, queue = null) {
         const method = queue == null ? 'get_proxy' : 'get_proxies';
         const ret = (await this.runMethodOnLastBlock(address, method));
         if (ret.exitCode != 0 && ret.exitCode != 1) {
@@ -438,7 +449,7 @@ class WrappedClient extends TonClient4 {
     }
 
     @Cacheable({ options: { expirationTime: 5 * 60 } })
-    static async getGlobalApy(testnet=false) {
+    static async getGlobalApy(testnet = false) {
         const network = testnet ? 'testnet' : 'mainnet'
         const globalApy = parseFloat(
             ((await backoff(() => axios.get(`https://connect.tonhubapi.com/net/${network}/elections/latest/apy`))).data as { apy: string }).apy
@@ -456,7 +467,7 @@ class WrappedClient extends TonClient4 {
 const wc = new WrappedClient({ endpoint: "https://mainnet-v4.tonhubapi.com", timeout: 10000 }, false);
 const wcTetstnet = new WrappedClient({ endpoint: "https://sandbox-v4.tonhubapi.com", timeout: 10000 }, true);
 
-function getWC(testnet=false) {
+function getWC(testnet = false) {
     if (testnet) {
         return wcTetstnet
     }
@@ -470,7 +481,7 @@ function getStakeToAllocateLiquid(available: bigint, minStake: bigint) {
 
 async function getStakingState() {
     const result = new Map<string, StakingState>();
-    async function _getStakingState(contractName: string, contractAddress: Address, queue=null, testnet=false) {
+    async function _getStakingState(contractName: string, contractAddress: Address, queue = null, testnet = false) {
         const seqno = await getWC(testnet).getLastSeqno(testnet);
         async function _getElectorStakeReqestSeqno() {
             const proxyContractAddress = await getWC(testnet).resolveContractProxy(contractAddress, queue);
@@ -490,16 +501,16 @@ async function getStakingState() {
         }
         const [ret, electorStakeReqestSeqno, balance] = await Promise.all([
             getWC(testnet).runMethodOnLastBlock(
-                contractAddress, 
+                contractAddress,
                 'get_staking_status',
-                queue == null ? [] : [{ type: 'int', value: BigInt(queue)}]),
+                queue == null ? [] : [{ type: 'int', value: BigInt(queue) }]),
             _getElectorStakeReqestSeqno(),
             getWC(testnet).getBalance(seqno, contractAddress)
         ]);
         // https://docs.ton.org/learn/tvm-instructions/tvm-exit-codes
         // 1 is !!!ALTERNATIVE!!! success exit code
         if (ret.exitCode != 0 && ret.exitCode != 1) {
-            const details = `\nAddress: ${contractAddress.toString()}\nArgs: ${JSON.stringify(queue == null ? [] : [{ type: 'int', value: queue}])}`
+            const details = `\nAddress: ${contractAddress.toString()}\nArgs: ${JSON.stringify(queue == null ? [] : [{ type: 'int', value: queue }])}`
             throw Error(`Got unexpextedexit code from get_staking_status method call. Exit code: ${ret.exitCode}${details}`)
         }
         const electorStakeReqestAge = INTER_BLOCK_DELAY_SECONDS * (seqno - electorStakeReqestSeqno);
@@ -511,7 +522,7 @@ async function getStakingState() {
         const couldUnlock = ret.reader.readNumber() === -1;
         const lockedOrFinalized = ret.reader.readNumber() === -1;
         const metricName = queue == null ? contractName : `${contractName}_${queue + 1}`
-        const state: StakingState = {stakeAt, stakeUntil, stakeSent, querySent, couldUnlock, stakingContractBalance: parseFloat(fromNano(balance))}
+        const state: StakingState = { stakeAt, stakeUntil, stakeSent, querySent, couldUnlock, stakingContractBalance: parseFloat(fromNano(balance)) }
         if (queue == null) {
             state.locked = lockedOrFinalized;
         } else {
@@ -523,8 +534,8 @@ async function getStakingState() {
     const genericPromises = Object.entries(genericContracts).map(
         ([contractName, contractAddress]) => _getStakingState(contractName, contractAddress)
     );
-    const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[ ...currentValue, 0], [...currentValue, 1]]), [])
-    
+    const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[...currentValue, 0], [...currentValue, 1]]), [])
+
     const lqPromises = lqTriplets.map(
         ([contractName, contractAddress, queue]) => _getStakingState(contractName, contractAddress, queue, liquidPools[contractName].network == "testnet")
     );
@@ -606,8 +617,8 @@ async function getStakingStats() {
     //const globalApy = parseFloat(APY(startWorkTime, electionEntities, electionsHistory, bonuses, validatorsElectedFor));
 
 
-    const result = new Map<string, {globalApy: number, poolApy: number, poolFee: number, daoShare: number, daoDenominator: number}>();
-    async function _getStakingStats(contractName: string, contractAddress: Address, liquid=false, testnet=false) {
+    const result = new Map<string, { globalApy: number, poolApy: number, poolFee: number, daoShare: number, daoDenominator: number }>();
+    async function _getStakingStats(contractName: string, contractAddress: Address, liquid = false, testnet = false) {
         const seqno = await getWC(testnet).getLastSeqno(testnet);
         const method = liquid ? 'get_pool_status' : 'get_params'
         const poolParamsStack = (await getWC(testnet).runMethodOnLastBlock(contractAddress, method)).result;
@@ -644,7 +655,7 @@ async function getStakingStats() {
                 result.set(`${contractName}_${queue}`, value);
             }
         }
-        
+
     }
 
     const genericPromises = Object.entries(genericContracts).map(
@@ -705,12 +716,12 @@ async function timeBeforeElectionEnd() {
             const config15 = configParse15(loadConfigParamById(srializedConfigCell, 15).beginParse());
             const elector = getWC(testnet).openAt(seqno, new ElectorContract());
             const electionsId = await backoff(() => elector.getActiveElectionId());
-            return {config15, electionsId}
+            return { config15, electionsId }
         }
     }
 
-    async function _timeBeforeElectionEnd(contractName: string, testnet=false) {
-        const {config15, electionsId} = await ElectionWatcher.timeBeforeElectionEnd(testnet)
+    async function _timeBeforeElectionEnd(contractName: string, testnet = false) {
+        const { config15, electionsId } = await ElectionWatcher.timeBeforeElectionEnd(testnet)
         var timeBeforeElectionsEnd: number;
         const currentTimeInSeconds = Math.floor(Date.now() / 1000);
 
@@ -761,7 +772,7 @@ type PoolStatusLiquid = PoolStatus & {
 }
 
 async function getStake() {
-    const result = new Map<string, PoolStatusGeneric|PoolStatusLiquid>();
+    const result = new Map<string, PoolStatusGeneric | PoolStatusLiquid>();
     async function _getStakeGeneric(contractName: string, contractAddress: Address) {
         const ret = (await getWC().runMethodOnLastBlock(contractAddress, 'get_pool_status'));
         if (ret.exitCode === 0 || ret.exitCode === 1) {
@@ -863,7 +874,7 @@ async function electionsQuerySent() {
         }
     }
 
-    async function _electionsQuerySent(contractName: string, contractAddress: Address, maxStake: number, ADNLs: string[], queue=null, testnet=false, minStake=0n) {
+    async function _electionsQuerySent(contractName: string, contractAddress: Address, maxStake: number, ADNLs: string[], queue = null, testnet = false, minStake = 0n) {
         const metricName = queue == null ? contractName : `${contractName}_${queue + 1}`;
         const seqno = await getWC(testnet).getLastSeqno(testnet);
         const electionEntities = await Elections.getElectionEntities(seqno, testnet);
@@ -898,8 +909,8 @@ async function electionsQuerySent() {
             promises.push(_electionsQuerySent(contractName, pools[pool_name].contracts[contractName], pools[pool_name].maxStake, pools[pool_name].ADNLs))
         }
     }
-    const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[ ...currentValue, 0], [...currentValue, 1]]), [])
-    
+    const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[...currentValue, 0], [...currentValue, 1]]), [])
+
     const lqPromises = lqTriplets.map(
         ([contractName, contractAddress, queue]) => _electionsQuerySent(
             contractName,
@@ -915,15 +926,66 @@ async function electionsQuerySent() {
     return result
 }
 
+export async function poolLostElections() {
+    type GetElectionEntitiesFn = ElectorContract["getElectionEntities"];
+    type GetElectionEntitiesParams = NonNullable<Awaited<ReturnType<GetElectionEntitiesFn>>>;
+    type ElectionEntitie = GetElectionEntitiesParams["entities"][0];
+    function compareElectionEntitie(a: ElectionEntitie, b: ElectionEntitie) {
+        if (a.stake > b.stake) {
+            return -1;
+        } else if (a.stake < b.stake) {
+            return 1;
+        }
+        return 0;
+    }
+
+    var loosers: string[] = [];
+
+    for (const net in ["mainnet", "testnet"]) {
+        const testnet = net == "testnet";
+        const seqno = await getWC(testnet).getLastSeqno(testnet);
+        const elector = getWC(testnet).openAt(seqno, new ElectorContract());
+
+        const electionEntities = await backoff(() => elector.getElectionEntities());
+        if (electionEntities) {
+            electionEntities.entities.sort(compareElectionEntitie)
+            const srializedConfigCell = (await getWC(testnet).getConfig(seqno, [16])).config.cell;
+            const { maxValidators, } = configParse16(loadConfigParamById(srializedConfigCell, 16).beginParse());
+            loosers = loosers.concat(electionEntities!.entities.slice(maxValidators).map((e) => e.address.toString()))
+        }
+    }
+
+    const result = new Map<string, boolean>();
+    async function _poolLostElections(contractName: string, contractAddress: Address, queue = null, testnet = false) {
+        const proxyContractAddress = await getWC(testnet).resolveContractProxy(contractAddress, queue);
+        result.set(contractName, loosers.includes(proxyContractAddress.toString()))
+    }
+
+
+    const genericPromises = Object.entries(genericContracts).map(
+        ([contractName, contractAddress]) => _poolLostElections(contractName, contractAddress)
+    );
+
+    const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[...currentValue, 0], [...currentValue, 1]]), [])
+    const lqPromises = lqTriplets.map(
+        ([contractName, contractAddress, queue]) => _poolLostElections(contractName, contractAddress, queue, liquidPools[contractName].network == "testnet")
+    );
+
+    await Promise.all(genericPromises.concat(lqPromises));
+
+    return result
+}
+
+
 async function mustParticipateInCycle() {
 
     class ElectionsAddresses {
         @Cacheable({
-            options: { expirationTime: INTER_BLOCK_DELAY_SECONDS},
+            options: { expirationTime: INTER_BLOCK_DELAY_SECONDS },
             // serialize: (result: Address[]) => {return result.map((addr: Address) => {return addr.toString()})},
             // deserialize: (result: string[]) => {return result.map((addr: string) => {return Address.parse(addr)})}
         })
-        static async get(testnet=false) {
+        static async get(testnet = false) {
             const seqno = await getWC(testnet).getLastSeqno(testnet);
             const srializedConfigCell = (await getWC(testnet).getConfig(seqno, [34])).config.cell;
             const currentValidators = configParseValidatorSet(loadConfigParamById(srializedConfigCell, 34).beginParse());
@@ -932,7 +994,7 @@ async function mustParticipateInCycle() {
             const ex = elections.find(v => v.id === currentValidators!.timeSince)!;
             const validatorProxyAddresses: string[] = [];
             for (const key of currentValidators!.list!.keys()) {
-                const val:{publicKey: Buffer} = currentValidators!.list!.get(key)!;
+                const val: { publicKey: Buffer } = currentValidators!.list!.get(key)!;
                 const v = ex.frozen.get(BigInt(`0x${val.publicKey.toString('hex')}`).toString());
                 validatorProxyAddresses.push(v.address.toString());
             }
@@ -941,7 +1003,7 @@ async function mustParticipateInCycle() {
     }
 
     const result = new Map<string, boolean>();
-    async function _mustParticipateInCycle(contractName: string, contractAddress: Address, queue=null, testnet=false) {
+    async function _mustParticipateInCycle(contractName: string, contractAddress: Address, queue = null, testnet = false) {
         const proxyContractAddress = await getWC(testnet).resolveContractProxy(contractAddress, queue);
         const metricName = queue == null ? contractName : `${contractName}_${queue + 1}`
         const electionsAddresses = await ElectionsAddresses.get(testnet);
@@ -949,10 +1011,10 @@ async function mustParticipateInCycle() {
         result.set(metricName, !includes)
     }
     const genericPromises = Object.entries(genericContracts).map(
-            ([contractName, contractAddress]) => _mustParticipateInCycle(contractName, contractAddress)
+        ([contractName, contractAddress]) => _mustParticipateInCycle(contractName, contractAddress)
     );
 
-    const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[ ...currentValue, 0], [...currentValue, 1]]), [])
+    const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[...currentValue, 0], [...currentValue, 1]]), [])
     const lqPromises = lqTriplets.map(
         ([contractName, contractAddress, queue]) => _mustParticipateInCycle(contractName, contractAddress, queue, liquidPools[contractName].network == "testnet")
     );
@@ -966,7 +1028,7 @@ async function poolsSize(): Promise<Map<string, number>> {
     const result = new Map<string, number>();
     for (const pool_name of Object.keys(pools)) {
         for (const contractName of Object.keys(pools[pool_name].contracts)) {
-           result.set(contractName, pools[pool_name].ADNLs.length);
+            result.set(contractName, pools[pool_name].ADNLs.length);
         }
     }
     for (const lq_pool_name of Object.keys(liquidPools)) {
@@ -978,9 +1040,9 @@ async function poolsSize(): Promise<Map<string, number>> {
     return result
 }
 
-async function unowned(){
+async function unowned() {
     const result = new Map<string, number>();
-    async function _getUnowned (contractName: string, contractAddress: Address, queue=null, testnet=false) {
+    async function _getUnowned(contractName: string, contractAddress: Address, queue = null, testnet = false) {
         const ret = (await getWC(testnet).runMethodOnLastBlock(contractAddress, 'get_unowned'));
         // https://docs.ton.org/learn/tvm-instructions/tvm-exit-codes
         // 1 is !!!ALTERNATIVE!!! success exit code
@@ -991,9 +1053,9 @@ async function unowned(){
         result.set(metricName, parseFloat(fromNano(ret.reader.readBigNumber())))
     }
     const genericPromises = Object.entries(genericContracts).map(
-            ([contractName, contractAddress]) => _getUnowned(contractName, contractAddress)
+        ([contractName, contractAddress]) => _getUnowned(contractName, contractAddress)
     );
-    const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[ ...currentValue, 0], [...currentValue, 1]]), [])
+    const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[...currentValue, 0], [...currentValue, 1]]), [])
     const lqPromises = lqTriplets.map(
         ([contractName, contractAddress, queue]) => _getUnowned(contractName, contractAddress, queue, liquidPools[contractName].network == "testnet")
     );
@@ -1004,7 +1066,7 @@ async function unowned(){
 
 async function controllersBalance(): Promise<Map<string, number>> {
     const result = new Map<string, number>();
-    async function _controllersBalance(contractName: string, contractAddress: Address, queue=null, testnet=false) {
+    async function _controllersBalance(contractName: string, contractAddress: Address, queue = null, testnet = false) {
         const seqno = await getWC(testnet).getLastSeqno(testnet);
         const controllerAddress = await getWC(testnet).resolveController(contractAddress);
         const balance = await getWC(testnet).getBalance(seqno, controllerAddress);
@@ -1012,9 +1074,9 @@ async function controllersBalance(): Promise<Map<string, number>> {
         result.set(metricName, parseFloat(fromNano(balance)));
     }
     const genericPromises = Object.entries(genericContracts).map(
-            ([contractName, contractAddress]) => _controllersBalance(contractName, contractAddress)
+        ([contractName, contractAddress]) => _controllersBalance(contractName, contractAddress)
     );
-    const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[ ...currentValue, 0], [...currentValue, 1]]), [])
+    const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[...currentValue, 0], [...currentValue, 1]]), [])
     const lqPromises = lqTriplets.map(
         ([contractName, contractAddress, queue]) => _controllersBalance(contractName, contractAddress, queue, liquidPools[contractName].network == "testnet")
     );
@@ -1023,7 +1085,7 @@ async function controllersBalance(): Promise<Map<string, number>> {
     return result
 }
 
-async function getValidatorsStats(): Promise<{quantity: number, totalStake: number}> {
+async function getValidatorsStats(): Promise<{ quantity: number, totalStake: number }> {
     const seqno = await getWC(false).getLastSeqno(false);
     const srializedConfigCell = (await getWC().getConfig(seqno, [34])).config.cell;
     const currentValidators = configParseValidatorSet(loadConfigParamById(srializedConfigCell, 34).beginParse());
@@ -1035,9 +1097,9 @@ async function getValidatorsStats(): Promise<{quantity: number, totalStake: numb
         (entity) => {
             all += ex.frozen.get(BigInt(`0x${entity.publicKey.toString('hex')}`).toString()).stake
         }
-        
+
     );
-    return {quantity: currentValidators.total, totalStake: parseFloat(fromNano(all))}
+    return { quantity: currentValidators.total, totalStake: parseFloat(fromNano(all)) }
 }
 
 async function getNextElectionsTime(): Promise<number> {
@@ -1046,7 +1108,7 @@ async function getNextElectionsTime(): Promise<number> {
     const config15 = configParse15(loadConfigParamById(srializedConfigCell, 15).beginParse());
     const currentValidators = configParseValidatorSet(loadConfigParamById(srializedConfigCell, 34).beginParse());
     const config36Raw = loadConfigParamById(srializedConfigCell, 36)
-    const nextValidators = config36Raw ? configParseValidatorSet(config36Raw.beginParse()) : {timeSince: null};
+    const nextValidators = config36Raw ? configParseValidatorSet(config36Raw.beginParse()) : { timeSince: null };
     const startWorkTimeNext = nextValidators?.timeSince || false;
     const startWorkTimeCurrent = currentValidators!.timeSince;
     const elector = getWC().open(new ElectorContract());
@@ -1090,7 +1152,7 @@ function memoizeMetric(func: Function, metric: string) {
     }
 }
 
-function consumeMetric(func: () => Promise<Map<string, any> | void>, metricName: string, poolLabel: {pool: string} | {}, value: any) {
+function consumeMetric(func: () => Promise<Map<string, any> | void>, metricName: string, poolLabel: { pool: string } | {}, value: any) {
     const sanitizedMetricName = toCamel(metricName);
     memoizeMetric(func, sanitizedMetricName);
     const labelNames = Object.keys(poolLabel);
@@ -1169,7 +1231,7 @@ async function exposeNextElectionsTime() {
     console.log("Successfully updated metrics for exposeNextElectionsTime");
 }
 
-const collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle, poolsSize, unowned, controllersBalance, getStakingStats];
+const collectFunctions = [getStakingState, timeBeforeElectionEnd, electionsQuerySent, getStake, mustParticipateInCycle, poolsSize, unowned, controllersBalance, getStakingStats, poolLostElections];
 const seconds = 30;
 const interval = seconds * 1000;
 
@@ -1181,13 +1243,13 @@ async function startExporter() {
     }
     funcToMetricNames.set(exposeComplaints, []);
     exposeComplaints();
-    setInterval(async function () {await exposeComplaints()}, interval);
+    setInterval(async function () { await exposeComplaints() }, interval);
     funcToMetricNames.set(exposeValidatorsStats, []);
     exposeValidatorsStats();
-    setInterval(async function () {await exposeValidatorsStats()}, interval);
+    setInterval(async function () { await exposeValidatorsStats() }, interval);
     funcToMetricNames.set(exposeNextElectionsTime, []);
     exposeNextElectionsTime();
-    setInterval(async function () {await exposeNextElectionsTime()}, interval);
+    setInterval(async function () { await exposeNextElectionsTime() }, interval);
     app.get('/metrics', async (req: Request, res: Response) => {
         res.setHeader('Content-Type', register.contentType);
         res.send(await register.metrics());
@@ -1207,4 +1269,19 @@ async function main() {
     await startExporter();
 }
 
-main()
+if (require.main === module) {
+    const configPath = fs.existsSync(SYSTEM_CONFIG_PATH + CONFIG_FILENAME) ? SYSTEM_CONFIG_PATH + CONFIG_FILENAME : `./${CONFIG_FILENAME}`
+    conf = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    pools = conf.pools;
+    liquidPools = conf.liquidPools;
+    for (const pool_name of Object.keys(pools)) {
+        for (const contractName of Object.keys(pools[pool_name].contracts)) {
+            pools[pool_name].contracts[contractName] = Address.parse(pools[pool_name].contracts[contractName]);
+            genericContracts[contractName] = pools[pool_name].contracts[contractName];
+        }
+    }
+    for (const pool_name of Object.keys(liquidPools)) {
+        liquidContracts[pool_name] = Address.parse(liquidPools[pool_name].contract)
+    }
+    main()
+}
