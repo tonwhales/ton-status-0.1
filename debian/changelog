@@ -4,7 +4,7 @@ ton-status (0.1-36) focal; urgency=medium
   * Added unit testing
   * Added script for elector state parsing
 
- -- Yma Het <yma.het@gmail.com>  Thu, 29 Aug 2024 17:36:20 +0200
+ -- yma <yma.het@gmail.com> Thu, 29 Aug 2024 17:36:20 +0200
 
 ton-status (0.1-35) focal; urgency=medium
 
