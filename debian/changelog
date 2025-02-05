@@ -1,3 +1,9 @@
+ton-status (0.1-37) focal; urgency=medium
+
+  * Remove only network-specific labels when error belongs to certain network
+
+ -- yma <yma.het@gmail.com> Wed, 5 Feb 2025 13:18:25 +0200
+
 ton-status (0.1-36) focal; urgency=medium
 
   * Added mtric for elections loss
