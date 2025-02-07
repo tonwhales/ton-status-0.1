@@ -530,15 +530,9 @@ function getStakeToAllocateLiquid(available: bigint, minStake: bigint) {
     return (minStake + EPS) * BigInt(2) <= available ? available / BigInt(2) : available
 }
 
-var RUN = 1;
-
 async function getStakingState() {
     const result = new Map<string, StakingState>();
     async function _getStakingState(args: {contractName: string, contractAddress: Address, queue: number | null, testnet: boolean}) {
-        RUN += 1;
-        if (RUN == 30) {
-            throw Error("test")
-        }
         const seqno = await getWC(args.testnet).getLastSeqno(args.testnet);
         async function _getElectorStakeReqestSeqno() {
             const proxyContractAddress = await getWC(args.testnet).resolveContractProxy(args.contractAddress, args.queue);
@@ -678,20 +672,20 @@ async function getStakingState() {
         
         
         const result = new Map<string, { globalApy: number, poolApy: number, poolFee: number, daoShare: number, daoDenominator: number }>();
-        async function _getStakingStats(contractName: string, contractAddress: Address, liquid = false, testnet = false) {
-            const seqno = await getWC(testnet).getLastSeqno(testnet);
-            const method = liquid ? 'get_pool_status' : 'get_params'
-            const poolParamsStack = (await getWC(testnet).runMethodOnLastBlock(contractAddress, method)).result;
-            const poolFeeParamIndex = liquid ? 9 : 5
+        async function _getStakingStats(args: {contractName: string, contractAddress: Address, liquid: boolean, testnet: boolean}) {
+            const seqno = await getWC(args.testnet).getLastSeqno(args.testnet);
+            const method = args.liquid ? 'get_pool_status' : 'get_params'
+            const poolParamsStack = (await getWC(args.testnet).runMethodOnLastBlock(args.contractAddress, method)).result;
+            const poolFeeParamIndex = args.liquid ? 9 : 5
             const poolFee = parseInt(((poolParamsStack[poolFeeParamIndex] as TupleItemInt).value / BigInt(100)).toString());
-            const poolApy = (await WrappedClient.getGlobalApy(testnet) - await WrappedClient.getGlobalApy(testnet) * (poolFee / 100)).toFixed(2);
+            const poolApy = (await WrappedClient.getGlobalApy(args.testnet) - await WrappedClient.getGlobalApy(args.testnet) * (poolFee / 100)).toFixed(2);
             let denominator = 1;
             let share = 1;
-            const ownerAddress = await getWC(testnet).resolveOwner(contractAddress);
+            const ownerAddress = await getWC(args.testnet).resolveOwner(args.contractAddress);
             let callMethodResult: Awaited<ReturnType<typeof TonClient4.prototype.runMethod>> = undefined;
-            callMethodResult = await getWC(testnet).runMethodOnLastBlock(ownerAddress, 'supported_interfaces');
+            callMethodResult = await getWC(args.testnet).runMethodOnLastBlock(ownerAddress, 'supported_interfaces');
             if (callMethodResult.exitCode === 0 || callMethodResult.exitCode === 1) {
-                const account = await getWC(testnet).getAccount(seqno, ownerAddress);
+                const account = await getWC(args.testnet).getAccount(seqno, ownerAddress);
                 if (account.account.state.type != "active") {
                     throw Error(`Got invalid account state: ${account.account.state.type} address: ${ownerAddress.toString()}`);
                 }
@@ -707,22 +701,24 @@ async function getStakingState() {
                     }
                 }
             }
-            const value = { globalApy: await WrappedClient.getGlobalApy(testnet), poolApy: parseFloat(poolApy), poolFee, daoShare: share, daoDenominator: denominator }
-            if (!liquid) {
-                result.set(contractName, value);
+            const value = { globalApy: await WrappedClient.getGlobalApy(args.testnet), poolApy: parseFloat(poolApy), poolFee, daoShare: share, daoDenominator: denominator }
+            if (!args.liquid) {
+                result.set(args.contractName, value);
             } else {
                 for (let queue = 1; queue <= 2; queue++) {
-                    result.set(`${contractName}_${queue}`, value);
+                    result.set(`${args.contractName}_${queue}`, value);
                 }
             }
             
         }
+
+        const wrapped_getStakingStats = WrapErrorsWithNetwork(_getStakingStats);
         
         const genericPromises = Object.entries(genericContracts).map(
-            ([contractName, contractAddress]) => _getStakingStats(contractName, contractAddress)
+            ([contractName, contractAddress]) => wrapped_getStakingStats({contractName, contractAddress, liquid: false, testnet: false})
         );
         const lqPromises = Object.entries(liquidContracts).map(
-            ([contractName, contractAddress]) => _getStakingStats(contractName, contractAddress, true, liquidPools[contractName].network == "testnet")
+            ([contractName, contractAddress]) => wrapped_getStakingStats({contractName, contractAddress, liquid: true, testnet: liquidPools[contractName].network == "testnet"})
         );
         await Promise.all(genericPromises.concat(lqPromises));
         
@@ -780,8 +776,8 @@ async function getStakingState() {
             }
         }
         
-        async function _timeBeforeElectionEnd(contractName: string, testnet = false) {
-            const { config15, electionsId } = await ElectionWatcher.timeBeforeElectionEnd(testnet)
+        async function _timeBeforeElectionEnd(args: {contractName: string, testnet: boolean}) {
+            const { config15, electionsId } = await ElectionWatcher.timeBeforeElectionEnd(args.testnet)
             var timeBeforeElectionsEnd: number;
             const currentTimeInSeconds = Math.floor(Date.now() / 1000);
             
@@ -792,17 +788,19 @@ async function getStakingState() {
                 timeBeforeElectionsEnd = 86400;
             }
             const value = { timeBeforeElectionEnd: timeBeforeElectionsEnd, electionsId: electionsId ? electionsId : 0, electorsEndBefore: config15.electorsEndBefore }
-            result.set(contractName, value);
+            result.set(args.contractName, value);
         }
+
+        const wrapped_timeBeforeElectionEnd = WrapErrorsWithNetwork(_timeBeforeElectionEnd);
         
         const promises = [];
         for (const contractName of Object.keys(genericContracts)) {
             //result.set(contractName, await ElectionWatcher.timeBeforeElectionEnd());
-            promises.push(_timeBeforeElectionEnd(contractName))
+            promises.push(wrapped_timeBeforeElectionEnd({contractName, testnet: false}))
         }
         for (const contractName of Object.keys(liquidContracts)) {
             for (let queue = 1; queue <= 2; queue++) {
-                promises.push(_timeBeforeElectionEnd(`${contractName}_${queue}`, liquidPools[contractName].network == "testnet"))
+                promises.push(wrapped_timeBeforeElectionEnd({contractName: `${contractName}_${queue}`, testnet: liquidPools[contractName].network == "testnet"}))
             }
         }
         
@@ -859,8 +857,8 @@ async function getStakingState() {
             delete stat.type;
             result.set(contractName, stat);
         }
-        async function _getStakeLiquid(contractName: string, contractAddress: Address, testnet: boolean, minStake: number) {
-            const ret = (await getWC(testnet).runMethodOnLastBlock(contractAddress, 'get_pool_status'));
+        async function _getStakeLiquid(args: {contractName: string, contractAddress: Address, testnet: boolean, minStake: number}) {
+            const ret = (await getWC(args.testnet).runMethodOnLastBlock(args.contractAddress, 'get_pool_status'));
             if (ret.exitCode === 0 || ret.exitCode === 1) {
                 if (ret.result[0].type !== 'int') {
                     throw Error('Invalid response');
@@ -894,21 +892,23 @@ async function getStakingState() {
                 ctx_balance_sent,
                 ctx_balance_pending_withdraw,
                 ctx_balance_withdraw,
-                steak_for_next_elections: parseFloat(fromNano(getStakeToAllocateLiquid(toNano((ctx_balance - ctx_balance_pending_withdraw).toFixed(2)), toNano(minStake))))
+                steak_for_next_elections: parseFloat(fromNano(getStakeToAllocateLiquid(toNano((ctx_balance - ctx_balance_pending_withdraw).toFixed(2)), toNano(args.minStake))))
             }
             delete stat.type;
             
             for (let queue = 1; queue <= 2; queue++) {
-                result.set(`${contractName}_${queue}`, stat);
+                result.set(`${args.contractName}_${queue}`, stat);
             }
         }
+
+        const wrapped_getStakeLiquid = WrapErrorsWithNetwork(_getStakeLiquid);
         
         
         const genericPromises = Object.entries(genericContracts).map(
             ([contractName, contractAddress]) => _getStakeGeneric(contractName, contractAddress)
         );
         const lqPromises = Object.entries(liquidContracts).map(
-            ([contractName, contractAddress]) => _getStakeLiquid(contractName, contractAddress, liquidPools[contractName].network == "testnet", liquidPools[contractName].minStake)
+            ([contractName, contractAddress]) => wrapped_getStakeLiquid({contractName, contractAddress, testnet: liquidPools[contractName].network == "testnet", minStake: liquidPools[contractName].minStake})
         );
         await Promise.all(genericPromises.concat(lqPromises));
         
@@ -934,56 +934,66 @@ async function getStakingState() {
             }
         }
         
-        async function _electionsQuerySent(contractName: string, contractAddress: Address, maxStake: number, ADNLs: string[], queue = null, testnet = false, minStake = 0n) {
-            const metricName = queue == null ? contractName : `${contractName}_${queue + 1}`;
-            const seqno = await getWC(testnet).getLastSeqno(testnet);
-            const electionEntities = await Elections.getElectionEntities(seqno, testnet);
+        async function _electionsQuerySent(args: {contractName: string, contractAddress: Address, maxStake: number, ADNLs: string[], queue: number | null, testnet: boolean, minStake: bigint}) {
+            const metricName = args.queue == null ? args.contractName : `${args.contractName}_${args.queue + 1}`;
+            const seqno = await getWC(args.testnet).getLastSeqno(args.testnet);
+            const electionEntities = await Elections.getElectionEntities(seqno, args.testnet);
             if (!electionEntities || !electionEntities.entities || electionEntities.entities.length == 0) {
                 result.set(metricName, false);
                 return
             }
-            const proxyContractAddress = await backoff(() => getWC(testnet).resolveContractProxy(contractAddress, queue));
+            const proxyContractAddress = await backoff(() => getWC(args.testnet).resolveContractProxy(args.contractAddress, args.queue));
             const contractStake = stakes.get(metricName);
-            var toAllocate = queue == null ? contractStake.ctx_balance : parseFloat(fromNano(getStakeToAllocateLiquid(toNano(contractStake.ctx_balance.toFixed(2)), minStake)));
+            var toAllocate = args.queue == null ? contractStake.ctx_balance : parseFloat(fromNano(getStakeToAllocateLiquid(toNano(contractStake.ctx_balance.toFixed(2)), args.minStake)));
             // the most stupid allocation logic. if it will fail, ther is definitely some troubles going on
-            const validatorsNeeded = Math.ceil(toAllocate / maxStake);
+            const validatorsNeeded = Math.ceil(toAllocate / args.maxStake);
             const querySentForADNLs = new Map<string, string>();
             for (const entitie of electionEntities.entities) {
                 querySentForADNLs.set(entitie.adnl.toString('hex'), entitie.address.toString());
             }
             //const querySentForADNLs = await ADNLQueries.get(testnet);
             let quesrySentForNCurrentElectors = 0;
-            for (const ADNL of ADNLs) {
+            for (const ADNL of args.ADNLs) {
                 if (Array.from(querySentForADNLs.keys()).includes(ADNL.toLowerCase())) {
                     if (querySentForADNLs.get(ADNL.toLowerCase()) == proxyContractAddress.toString()) {
                         quesrySentForNCurrentElectors++;
                     }
                 }
             }
-            if (contractName == "Whales Club #1") {
+            if (args.contractName == "Whales Club #1") {
                 console.log(`validatorsNeeded: ${validatorsNeeded}`)
                 console.log(`quesrySentForNCurrentElectors: ${quesrySentForNCurrentElectors}`)
             }
             result.set(metricName, validatorsNeeded <= quesrySentForNCurrentElectors);
         }
+
+        const wrapped_electionsQuerySent = WrapErrorsWithNetwork(_electionsQuerySent);
         
         const promises = [];
         for (const pool_name of Object.keys(pools)) {
             for (const contractName of Object.keys(pools[pool_name].contracts)) {
-                promises.push(_electionsQuerySent(contractName, pools[pool_name].contracts[contractName], pools[pool_name].maxStake, pools[pool_name].ADNLs))
+                promises.push(wrapped_electionsQuerySent({
+                    contractName,
+                    contractAddress: pools[pool_name].contracts[contractName],
+                    maxStake: pools[pool_name].maxStake,
+                    ADNLs: pools[pool_name].ADNLs,
+                    queue: null,
+                    testnet: false,
+                    minStake: 0n}))
             }
         }
         const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[...currentValue, 0], [...currentValue, 1]]), [])
         
         const lqPromises = lqTriplets.map(
-            ([contractName, contractAddress, queue]) => _electionsQuerySent(
+            ([contractName, contractAddress, queue]) => wrapped_electionsQuerySent({
                 contractName,
                 contractAddress,
-                liquidPools[contractName].maxStake,
-                liquidPools[contractName].ADNLs, queue,
-                liquidPools[contractName].network == "testnet",
-                toNano(liquidPools[contractName].minStake)
-            )
+                maxStake: liquidPools[contractName].maxStake,
+                ADNLs: liquidPools[contractName].ADNLs,
+                queue,
+                testnet: liquidPools[contractName].network == "testnet",
+                minStake: toNano(liquidPools[contractName].minStake)
+            })
         );
         await Promise.all(promises.concat(lqPromises))
         
@@ -1004,20 +1014,27 @@ async function getStakingState() {
         }
         
         var loosers: string[] = [];
-        
-        for (const net in ["mainnet", "testnet"]) {
-            const testnet = net == "testnet";
-            const seqno = await getWC(testnet).getLastSeqno(testnet);
-            const elector = getWC(testnet).openAt(seqno, new ElectorContract());
+
+        async function _checkNetworkForLoosers(args: {testnet: boolean}) {
+            const seqno = await getWC(args.testnet).getLastSeqno(args.testnet);
+            const elector = getWC(args.testnet).openAt(seqno, new ElectorContract());
             
             const electionEntities = await backoff(() => elector.getElectionEntities());
             if (electionEntities) {
                 electionEntities.entities.sort(compareElectionEntitie)
-                const srializedConfigCell = (await getWC(testnet).getConfig(seqno, [16])).config.cell;
+                const srializedConfigCell = (await getWC(args.testnet).getConfig(seqno, [16])).config.cell;
                 const { maxValidators, } = configParse16(loadConfigParamById(srializedConfigCell, 16).beginParse());
                 loosers = loosers.concat(electionEntities!.entities.slice(maxValidators).map((e) => e.address.toString()))
             }
         }
+
+        const wrapped_checkNetworkForLoosers = WrapErrorsWithNetwork(_checkNetworkForLoosers);
+
+        const loosersPromises = [true, false].map(
+            (testnet) => wrapped_checkNetworkForLoosers({testnet})
+        )
+
+        await Promise.all(loosersPromises);
         
         const result = new Map<string, boolean>();
         async function _poolLostElections(contractName: string, contractAddress: Address, queue = null, testnet = false) {
@@ -1067,20 +1084,23 @@ async function getStakingState() {
         }
         
         const result = new Map<string, boolean>();
-        async function _mustParticipateInCycle(contractName: string, contractAddress: Address, queue = null, testnet = false) {
-            const proxyContractAddress = await getWC(testnet).resolveContractProxy(contractAddress, queue);
-            const metricName = queue == null ? contractName : `${contractName}_${queue + 1}`
-            const electionsAddresses = await ElectionsAddresses.get(testnet);
+        async function _mustParticipateInCycle(args: {contractName: string, contractAddress: Address, queue: number | null, testnet: boolean}) {
+            const proxyContractAddress = await getWC(args.testnet).resolveContractProxy(args.contractAddress, args.queue);
+            const metricName = args.queue == null ? args.contractName : `${args.contractName}_${args.queue + 1}`
+            const electionsAddresses = await ElectionsAddresses.get(args.testnet);
             const includes = electionsAddresses.includes(proxyContractAddress.toString());
             result.set(metricName, !includes)
         }
+
+        const wrapped_mustParticipateInCycle = WrapErrorsWithNetwork(_mustParticipateInCycle);
+
         const genericPromises = Object.entries(genericContracts).map(
-            ([contractName, contractAddress]) => _mustParticipateInCycle(contractName, contractAddress)
+            ([contractName, contractAddress]) => wrapped_mustParticipateInCycle({contractName, contractAddress, queue: null, testnet: false})
         );
         
         const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[...currentValue, 0], [...currentValue, 1]]), [])
         const lqPromises = lqTriplets.map(
-            ([contractName, contractAddress, queue]) => _mustParticipateInCycle(contractName, contractAddress, queue, liquidPools[contractName].network == "testnet")
+            ([contractName, contractAddress, queue]) => wrapped_mustParticipateInCycle({contractName, contractAddress, queue, testnet: liquidPools[contractName].network == "testnet"})
         );
         
         await Promise.all(genericPromises.concat(lqPromises));
@@ -1106,22 +1126,25 @@ async function getStakingState() {
     
     async function unowned() {
         const result = new Map<string, number>();
-        async function _getUnowned(contractName: string, contractAddress: Address, queue = null, testnet = false) {
-            const ret = (await getWC(testnet).runMethodOnLastBlock(contractAddress, 'get_unowned'));
+        async function _getUnowned(args: {contractName: string, contractAddress: Address, queue: number | null, testnet: boolean}) {
+            const ret = (await getWC(args.testnet).runMethodOnLastBlock(args.contractAddress, 'get_unowned'));
             // https://docs.ton.org/learn/tvm-instructions/tvm-exit-codes
             // 1 is !!!ALTERNATIVE!!! success exit code
             if (ret.exitCode != 0 && ret.exitCode != 1) {
                 throw Error(`Got unexpextedexit code from get_unowned method call: ${ret.exitCode}`)
             }
-            const metricName = queue == null ? contractName : `${contractName}_${queue + 1}`
+            const metricName = args.queue == null ? args.contractName : `${args.contractName}_${args.queue + 1}`
             result.set(metricName, parseFloat(fromNano(ret.reader.readBigNumber())))
         }
+
+        const wrapped_getUnowned = WrapErrorsWithNetwork(_getUnowned);
+
         const genericPromises = Object.entries(genericContracts).map(
-            ([contractName, contractAddress]) => _getUnowned(contractName, contractAddress)
+            ([contractName, contractAddress]) => wrapped_getUnowned({contractName, contractAddress, queue: null, testnet: false})
         );
         const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[...currentValue, 0], [...currentValue, 1]]), [])
         const lqPromises = lqTriplets.map(
-            ([contractName, contractAddress, queue]) => _getUnowned(contractName, contractAddress, queue, liquidPools[contractName].network == "testnet")
+            ([contractName, contractAddress, queue]) => wrapped_getUnowned({contractName, contractAddress, queue, testnet: liquidPools[contractName].network == "testnet"})
         );
         await Promise.all(genericPromises.concat(lqPromises));
         
@@ -1130,19 +1153,19 @@ async function getStakingState() {
     
     async function controllersBalance(): Promise<Map<string, number>> {
         const result = new Map<string, number>();
-        async function _controllersBalance(contractName: string, contractAddress: Address, queue = null, testnet = false) {
-            const seqno = await getWC(testnet).getLastSeqno(testnet);
-            const controllerAddress = await getWC(testnet).resolveController(contractAddress);
-            const balance = await getWC(testnet).getBalance(seqno, controllerAddress);
-            const metricName = queue == null ? contractName : `${contractName}_${queue + 1}`
+        async function _controllersBalance(args: {contractName: string, contractAddress: Address, queue: number | null, testnet: boolean}) {
+            const seqno = await getWC(args.testnet).getLastSeqno(args.testnet);
+            const controllerAddress = await getWC(args.testnet).resolveController(args.contractAddress);
+            const balance = await getWC(args.testnet).getBalance(seqno, controllerAddress);
+            const metricName = args.queue == null ? args.contractName : `${args.contractName}_${args.queue + 1}`
             result.set(metricName, parseFloat(fromNano(balance)));
         }
         const genericPromises = Object.entries(genericContracts).map(
-            ([contractName, contractAddress]) => _controllersBalance(contractName, contractAddress)
+            ([contractName, contractAddress]) => _controllersBalance({contractName, contractAddress, queue: null, testnet: false})
         );
         const lqTriplets = Object.entries(liquidContracts).reduce((accumulator, currentValue) => accumulator.concat([[...currentValue, 0], [...currentValue, 1]]), [])
         const lqPromises = lqTriplets.map(
-            ([contractName, contractAddress, queue]) => _controllersBalance(contractName, contractAddress, queue, liquidPools[contractName].network == "testnet")
+            ([contractName, contractAddress, queue]) => _controllersBalance({contractName, contractAddress, queue, testnet: liquidPools[contractName].network == "testnet"})
         );
         await Promise.all(genericPromises.concat(lqPromises));
         
