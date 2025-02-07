@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -ex
 wget https://deb.nodesource.com/node_20.x/pool/main/n/nodejs/nodejs_20.9.0-1nodesource1_amd64.deb
 ar x nodejs_20.9.0-1nodesource1_amd64.deb
 unxz data.tar.xz
