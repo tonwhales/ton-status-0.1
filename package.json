@@ -12,6 +12,7 @@
     "@ton/core": "^0.60.0",
     "@ton/crypto": "3.2.0",
     "@ton/ton": "^15.2.0",
+    "@yao-pkg/pkg": "^6.3.0",
     "async-mutex": "^0.4.0",
     "axios": "0.27.2",
     "cache-flow": "^1.9.0",
@@ -23,7 +24,9 @@
   },
   "pkg": {
     "scripts": [
-      "node_modules/fp-ts/**/*.json"
+      "node_modules/fp-ts/**/*.json",
+      "node_modules/axios/dist/node/*",
+      "node_modules/@ton/ton/node_modules/axios/dist/node/*"
     ]
   },
   "devDependencies": {
