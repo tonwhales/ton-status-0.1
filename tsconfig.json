@@ -3,9 +3,10 @@
       "emitDecoratorMetadata": true,
       "experimentalDecorators": true,
       "target": "ES2020",
-      "module": "CommonJS",
+      "module": "NodeNext",
       "esModuleInterop": true,
-      "moduleResolution": "NodeNext"
+      "moduleResolution": "NodeNext",
+      "skipLibCheck": true
     },
     "files": ["getStatus.ts"]
   }

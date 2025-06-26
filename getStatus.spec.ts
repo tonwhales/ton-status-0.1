@@ -1,5 +1,5 @@
 import { Address } from "@ton/core";
-import { poolLostElections, setOverrideSeqno, overrideConfig } from "./getStatus"
+import { poolLostElections, setOverrideSeqno, overrideConfig, serialize, deserialize } from "./getStatus"
 
 
 const mapToObject = (map: any) => Object.fromEntries(map.entries());
@@ -59,4 +59,35 @@ describe('metrics', () => {
 //         setOverrideSeqno(39502071, 22472603);
 //         console.log(await poolLostElections())
 //     });
+});
+
+describe('Buffer and Uint8Array serialization', () => {
+    test('should maintain type consistency after serialization', () => {
+        const hexString = 'aac2d4e950ce00189b6cd2e9f9e25876e082d23af83a177d827fcad8918f3163';
+        const buffer = Buffer.from(hexString, 'hex');
+        const uint8Array = new Uint8Array(Buffer.from(hexString, 'hex'));
+
+        const mockElectionEntity = {
+            adnl: buffer,
+            address: 'test'
+        };
+
+        const mockElectionEntityUint8 = {
+            adnl: uint8Array,
+            address: 'test'
+        };
+
+        const serializedBuffer = serialize(mockElectionEntity);
+        const deserializedBuffer = deserialize(serializedBuffer) as any;
+
+        const serializedUint8 = serialize(mockElectionEntityUint8);
+        const deserializedUint8 = deserialize(serializedUint8) as any;
+
+        expect(deserializedBuffer.adnl.toString('hex')).toBe(hexString);
+        expect(Buffer.isBuffer(deserializedBuffer.adnl)).toBe(true);
+
+        expect(deserializedUint8.adnl instanceof Uint8Array).toBe(true);
+        expect(!Buffer.isBuffer(deserializedUint8.adnl)).toBe(true);
+        expect(Buffer.from(deserializedUint8.adnl).toString('hex')).toBe(hexString);
+    });
 });

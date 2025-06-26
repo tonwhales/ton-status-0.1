@@ -183,6 +183,8 @@ const BIGINT_EXT_TYPE = 0; // Any in 0-127
 const ADDRESS_EXT_TYPE = 1;
 const TUPLE_READER_EXT_TYPE = 2;
 const CELL_EXT_TYPE = 3;
+const BUFFER_EXT_TYPE = 4;
+//const UINT8ARRAY_EXT_TYPE = 5;
 const extensionCodec = new ExtensionCodec();
 extensionCodec.register({
     type: BIGINT_EXT_TYPE,
@@ -263,11 +265,47 @@ extensionCodec.register({
     },
 });
 
-function serialize(r: any) {
+extensionCodec.register({
+    type: BUFFER_EXT_TYPE,
+    encode(input: unknown): Uint8Array | null {
+        if (Buffer.isBuffer(input)) {
+            return encode(input.toString('hex'));
+        } else {
+            return null;
+        }
+    },
+    decode(data: Uint8Array): Buffer {
+        const val = decode(data);
+        if (typeof val !== "string") {
+            throw new DecodeError(`unexpected Buffer source: ${val} (${typeof val})`);
+        }
+        return Buffer.from(val, 'hex');
+    },
+});
+
+// extensionCodec.register({
+//     type: UINT8ARRAY_EXT_TYPE,
+//     encode(input: unknown): Uint8Array | null {
+//         if (input instanceof Uint8Array && !Buffer.isBuffer(input)) {
+//             return encode(Buffer.from(input).toString('hex'));
+//         } else {
+//             return null;
+//         }
+//     },
+//     decode(data: Uint8Array): Uint8Array {
+//         const val = decode(data);
+//         if (typeof val !== "string") {
+//             throw new DecodeError(`unexpected Uint8Array source: ${val} (${typeof val})`);
+//         }
+//         return new Uint8Array(Buffer.from(val, 'hex'));
+//     },
+// });
+
+export function serialize(r: any) {
     return encode(r, { extensionCodec })
 }
 
-function deserialize(e: any) {
+export function deserialize(e: any) {
     return decode(e, { extensionCodec })
 }
 
@@ -370,7 +408,13 @@ class WrappedClient extends TonClient4 {
         argsToKey: (seqno: number, address: Address) => WrappedClient.objToB64String([seqno, address.toString()])
     })
     public async getAccount(block: number, address: Address) {
-        return await backoff(() => super.getAccount(block, address));
+        let backoffFunc = createBackoff(
+            {
+                onError: (e, i) => i > 3 && console.warn(`Error trying to get account (testnet: ${this.isTestnet}, block: ${block}, address: ${address.toString()}): \n${e}`),
+                maxFailureCount: 5
+            }
+        );
+        return await backoffFunc(() => super.getAccount(block, address));
     }
     
     @Sequential
@@ -379,7 +423,13 @@ class WrappedClient extends TonClient4 {
         argsToKey: (seqno: number, address: Address) => WrappedClient.objToB64String([seqno, address.toString()])
     })
     public async getAccountLite(block: number, address: Address) {
-        return await backoff(() => super.getAccountLite(block, address));
+        let backoffFunc = createBackoff(
+            {
+                onError: (e, i) => i > 3 && console.warn(`Error trying to get account lite (testnet: ${this.isTestnet}, block: ${block}, address: ${address.toString()}): \n${e}`),
+                maxFailureCount: 5
+            }
+        );
+        return await backoffFunc(() => super.getAccountLite(block, address));
     }
     
     @Sequential
@@ -394,7 +444,10 @@ class WrappedClient extends TonClient4 {
         argsToKey: (seqno: number, address: Address) => WrappedClient.objToB64String([seqno, address.toString()])
     })
     public async getBalance(seqno: number, address: Address) {
-        return parseFloat((await backoff(() => super.getAccountLite(seqno, address))).account.balance.coins)
+        let backoffFunc = createBackoff(
+            { onError: (e, i) => i > 3 && console.warn(`Error trying to get balance (testnet: ${this.isTestnet}, seqno: ${seqno}, address: ${address.toString()}): \n${e}`), maxFailureCount: 5 }
+        );
+        return parseFloat((await backoffFunc(() => super.getAccountLite(seqno, address))).account.balance.coins)
     }
     
     @Cacheable({
@@ -959,10 +1012,6 @@ async function getStakingState() {
                         quesrySentForNCurrentElectors++;
                     }
                 }
-            }
-            if (args.contractName == "Whales Club #1") {
-                console.log(`validatorsNeeded: ${validatorsNeeded}`)
-                console.log(`quesrySentForNCurrentElectors: ${quesrySentForNCurrentElectors}`)
             }
             result.set(metricName, validatorsNeeded <= quesrySentForNCurrentElectors);
         }
